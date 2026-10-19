@@ -38,12 +38,13 @@ function sendError(peer, code, message, fatal = false) {
 
 function startServer(options = {}) {
     const host = options.host || process.env.COOP_HOST || "127.0.0.1";
-    const port = Number(options.port || process.env.COOP_PORT || 8080);
+    const port = options.port === undefined ? Number(process.env.COOP_PORT || 8080) : Number(options.port);
     const maxPlayers = Number(options.maxPlayers || process.env.COOP_MAX_PLAYERS || DEFAULT_MAX_PLAYERS);
     const maxClients = Number(options.maxClients || process.env.COOP_MAX_CLIENTS || DEFAULT_MAX_CLIENTS);
 
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new Error("COOP_PORT must be an integer between 1 and 65535");
+    const minimumPort = options.port === 0 ? 0 : 1;
+    if (!Number.isInteger(port) || port < minimumPort || port > 65535) {
+        throw new Error("COOP_PORT must be an integer between 1 and 65535 (0 is allowed only for ephemeral test ports)");
     }
     if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 16) {
         throw new Error("COOP_MAX_PLAYERS must be an integer between 2 and 16");
@@ -274,7 +275,9 @@ function startServer(options = {}) {
     }, 30000);
 
     wss.on("listening", () => {
-        console.info("[Coop-Pl] WebSocket server listening on ws://" + host + ":" + port);
+        const address = wss.address();
+        const actualPort = address && typeof address === "object" ? address.port : port;
+        console.info("[Coop-Pl] WebSocket server listening on ws://" + host + ":" + actualPort);
         console.info("[Coop-Pl] Trusted LAN testing only; no authentication or TLS is built in.");
     });
 
