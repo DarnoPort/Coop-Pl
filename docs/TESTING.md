@@ -2,15 +2,17 @@
 
 ## Автоматические проверки
 
-Из корня репозитория:
+В PowerShell из корня репозитория:
 
     cd server
-    npm install
-    npm test
+    npm.cmd install
+    npm.cmd test
 
-Синтаксическая проверка плагина:
+Тесты находятся в соседнем каталоге tests/, а зависимость ws устанавливается в server/node_modules/. Интеграционный тест явно разрешает ws относительно каталога пакета сервера, поэтому установка зависимости в этом пакете работает и в Windows.
 
-    node --check plugin/CoopPl_Core.js
+Синтаксическую проверку плагина, находясь в каталоге server, запускай так:
+
+    node --check ../plugin/CoopPl_Core.js
 
 Скрипт tests/protocol.test.js проверяет валидацию пакетов, tests/server.test.js запускает настоящий WebSocket-сервер и двух WebSocket-клиентов, а tests/plugin.test.js загружает плагин в минимальный mock-runtime RPG Maker для проверки базового цикла подключения и remote sprite. Эти проверки не заменяют запуск двух настоящих экземпляров MZ.
 
