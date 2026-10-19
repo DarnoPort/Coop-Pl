@@ -7,10 +7,12 @@ const {
     normalizeRoomCode,
     normalizePlayerName,
     normalizeState,
-    normalizeSequence
+    normalizeSequence,
+    normalizeWorldSnapshot,
+    normalizeWorldChange
 } = require("./protocol");
 
-const MAX_MESSAGE_BYTES = 16 * 1024;
+const MAX_MESSAGE_BYTES = 256 * 1024;
 const DEFAULT_MAX_PLAYERS = 4;
 const DEFAULT_MAX_CLIENTS = 32;
 
@@ -111,7 +113,12 @@ function startServer(options = {}) {
 
         let room = rooms.get(roomCode);
         if (!room) {
-            room = { code: roomCode, hostId: null, members: new Map() };
+            room = {
+                code: roomCode,
+                hostId: null,
+                members: new Map(),
+                world: { switches: Object.create(null), variables: Object.create(null), revision: 0 }
+            };
             rooms.set(roomCode, room);
         }
 
@@ -137,7 +144,8 @@ function startServer(options = {}) {
             room: room.code,
             hostId: room.hostId,
             isHost: peer.id === room.hostId,
-            players: Array.from(room.members.values(), publicPlayer)
+            players: Array.from(room.members.values(), publicPlayer),
+            world: room.world
         });
 
         broadcast(room, {
@@ -174,6 +182,111 @@ function startServer(options = {}) {
             seq: sequence,
             state
         }, peer.id);
+    }
+
+
+    function updateWorldSnapshot(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before syncing shared world state.");
+            return;
+        }
+        const room = rooms.get(peer.roomCode);
+        if (!room || peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the room host may publish authoritative world snapshots.");
+            return;
+        }
+
+        const snapshot = normalizeWorldSnapshot(message.world);
+        if (!snapshot) {
+            sendError(peer, "INVALID_WORLD_SNAPSHOT", "Shared world snapshot is invalid.");
+            return;
+        }
+
+        room.world = {
+            switches: snapshot.switches,
+            variables: snapshot.variables,
+            revision: room.world.revision + 1
+        };
+
+        safeSend(peer.socket, {
+            type: "world_snapshot_ack",
+            revision: room.world.revision
+        });
+        broadcast(room, {
+            type: "world_snapshot",
+            world: room.world
+        }, peer.id);
+    }
+
+    function requestWorldChange(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before requesting world changes.");
+            return;
+        }
+
+        const room = rooms.get(peer.roomCode);
+        if (!room || peer.id === room.hostId) {
+            sendError(peer, "INVALID_WORLD_REQUEST", "The host does not request its own world changes.");
+            return;
+        }
+
+        const change = normalizeWorldChange(message);
+        if (!change) {
+            sendError(peer, "INVALID_WORLD_CHANGE", "Requested switch or variable change is invalid.");
+            return;
+        }
+
+        const host = room.members.get(room.hostId);
+        if (!host) {
+            sendError(peer, "HOST_UNAVAILABLE", "The room host is not connected.");
+            return;
+        }
+
+        safeSend(host.socket, {
+            type: "world_request",
+            playerId: peer.id,
+            playerName: peer.name,
+            kind: change.kind,
+            id: change.id,
+            value: change.value
+        });
+    }
+
+    function publishWorldChange(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before syncing shared world changes.");
+            return;
+        }
+
+        const room = rooms.get(peer.roomCode);
+        if (!room || peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the room host may publish authoritative world changes.");
+            return;
+        }
+
+        const change = normalizeWorldChange(message);
+        if (!change) {
+            sendError(peer, "INVALID_WORLD_CHANGE", "Shared switch or variable change is invalid.");
+            return;
+        }
+
+        const collection = change.kind === "switch" ? room.world.switches : room.world.variables;
+        const key = String(change.id);
+        if ((change.kind === "switch" && change.value === false) ||
+            (change.kind === "variable" && change.value === 0)) {
+            delete collection[key];
+        } else {
+            collection[key] = change.value;
+        }
+
+        room.world.revision += 1;
+        broadcast(room, {
+            type: "world_change",
+            revision: room.world.revision,
+            kind: change.kind,
+            id: change.id,
+            value: change.value
+        });
     }
 
     wss.on("connection", socket => {
@@ -232,6 +345,15 @@ function startServer(options = {}) {
                     break;
                 case "state":
                     updateState(peer, message);
+                    break;
+                case "world_snapshot":
+                    updateWorldSnapshot(peer, message);
+                    break;
+                case "world_request":
+                    requestWorldChange(peer, message);
+                    break;
+                case "world_change":
+                    publishWorldChange(peer, message);
                     break;
                 case "ping":
                     safeSend(socket, { type: "pong", timestamp: Date.now() });
