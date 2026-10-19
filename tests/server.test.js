@@ -3,7 +3,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { once } = require("node:events");
-const { WebSocket } = require("ws");
+const path = require("node:path");
+const { WebSocket } = require(require.resolve("ws", {
+    paths: [path.join(__dirname, "..", "server")]
+}));
 const { startServer } = require("../server/src/server");
 
 function makeState(x, y) {
