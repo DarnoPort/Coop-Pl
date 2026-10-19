@@ -1,0 +1,17 @@
+{
+  "name": "coop-pl-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LAN-first WebSocket room server for the Coop-Pl RPG Maker MZ prototype",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test ../tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
