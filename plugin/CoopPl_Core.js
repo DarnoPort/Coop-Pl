@@ -1,6 +1,6 @@
 /*:
  * @target MZ
- * @plugindesc Co-op prototype: exchange player position and appearance over WebSocket.
+ * @plugindesc Coop-Pl: network players and sync shared switches/variables over WebSocket.
  * @author DarnoPort
  *
  * @param ServerUrl
