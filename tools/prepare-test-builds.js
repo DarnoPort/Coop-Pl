@@ -35,6 +35,17 @@ function serializePluginManifest(manifestPath, plugins) {
     );
 }
 
+function findGameDataRoot(sourcePath) {
+    // RPG Maker MZ Windows deployments normally put game data under www/,
+    // while some test exports or unpacked projects keep js/ at the root.
+    for (const candidate of [path.join(sourcePath, "www"), sourcePath]) {
+        if (fs.existsSync(path.join(candidate, "js", "plugins.js"))) return candidate;
+    }
+    throw new Error(
+        "Could not find js/plugins.js at the deployment root or under www/. Is this an exported MZ game?"
+    );
+}
+
 function copyDirectoryContents(sourceDir, destinationDir) {
     fs.mkdirSync(destinationDir, { recursive: true });
     for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
@@ -115,13 +126,15 @@ function prepareTestBuilds(options) {
     for (const requiredPath of [
         path.join(sourcePath, "Game.exe"),
         path.join(sourcePath, "package.json"),
-        path.join(sourcePath, "js", "plugins.js"),
         pluginSourcePath
     ]) {
         if (!fs.existsSync(requiredPath) || !fs.statSync(requiredPath).isFile()) {
             throw new Error("Required file not found: " + requiredPath);
         }
     }
+
+    const dataRoot = findGameDataRoot(sourcePath);
+    const dataRelativePath = path.relative(sourcePath, dataRoot);
 
     if (isWithin(sourcePath, outputRoot)) {
         throw new Error("OutputRoot must not be inside the source export folder.");
@@ -143,7 +156,7 @@ function prepareTestBuilds(options) {
     if (!sourcePackage || typeof sourcePackage !== "object" || Array.isArray(sourcePackage)) {
         throw new Error("package.json must contain a JSON object.");
     }
-    parsePluginManifest(path.join(sourcePath, "js", "plugins.js"));
+    parsePluginManifest(path.join(dataRoot, "js", "plugins.js"));
 
     const resolvedServerUrl = options.serverUrl || null;
     const resolvedRoomCode = options.roomCode || null;
@@ -152,12 +165,13 @@ function prepareTestBuilds(options) {
     for (const [role, targetPath] of [["Host", hostPath], ["Guest", guestPath]]) {
         copyDirectoryContents(sourcePath, targetPath);
 
-        const pluginTargetPath = path.join(targetPath, "js", "plugins", "CoopPl_Core.js");
+        const targetDataRoot = path.join(targetPath, dataRelativePath);
+        const pluginTargetPath = path.join(targetDataRoot, "js", "plugins", "CoopPl_Core.js");
         fs.mkdirSync(path.dirname(pluginTargetPath), { recursive: true });
         fs.copyFileSync(pluginSourcePath, pluginTargetPath);
 
         patchPluginManifest(
-            path.join(targetPath, "js", "plugins.js"),
+            path.join(targetDataRoot, "js", "plugins.js"),
             {
                 serverUrl: resolvedServerUrl,
                 roomCode: resolvedRoomCode,
