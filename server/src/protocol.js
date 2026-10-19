@@ -70,10 +70,71 @@ function normalizeSequence(value) {
     return boundedInteger(value, 0, Number.MAX_SAFE_INTEGER) ? value : null;
 }
 
+
+const MAX_WORLD_ENTRIES = 5000;
+const MAX_WORLD_STRING_LENGTH = 4096;
+const WORLD_ID_PATTERN = /^[1-9][0-9]{0,5}$/;
+
+function normalizeWorldValue(value) {
+    if (value === null || typeof value === "boolean") return value;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") {
+        return value.length <= MAX_WORLD_STRING_LENGTH ? value : null;
+    }
+    return null;
+}
+
+function normalizeWorldEntries(entries, kind) {
+    if (!isRecord(entries)) return null;
+    const keys = Object.keys(entries);
+    if (keys.length > MAX_WORLD_ENTRIES) return null;
+
+    const result = Object.create(null);
+    for (const key of keys) {
+        if (!WORLD_ID_PATTERN.test(key)) return null;
+        const id = Number(key);
+        if (!boundedInteger(id, 1, 999999)) return null;
+
+        const value = normalizeWorldValue(entries[key]);
+        if (value === null && entries[key] !== null) return null;
+        if (kind === "switches" && typeof value !== "boolean") return null;
+        result[key] = value;
+    }
+    return result;
+}
+
+function normalizeWorldSnapshot(value) {
+    if (!isRecord(value)) return null;
+    const switches = normalizeWorldEntries(value.switches, "switches");
+    const variables = normalizeWorldEntries(value.variables, "variables");
+    if (!switches || !variables) return null;
+
+    return { switches, variables };
+}
+
+function normalizeWorldChange(value) {
+    if (!isRecord(value)) return null;
+    if (value.kind !== "switch" && value.kind !== "variable") return null;
+    if (!boundedInteger(value.id, 1, 999999)) return null;
+
+    const normalizedValue = normalizeWorldValue(value.value);
+    if (normalizedValue === null && value.value !== null) return null;
+    if (value.kind === "switch" && typeof normalizedValue !== "boolean") return null;
+
+    return {
+        kind: value.kind,
+        id: value.id,
+        value: normalizedValue
+    };
+}
+
 module.exports = {
     isRecord,
     normalizeRoomCode,
     normalizePlayerName,
     normalizeState,
-    normalizeSequence
+    normalizeSequence,
+    normalizeWorldValue,
+    normalizeWorldSnapshot,
+    normalizeWorldChange
 };
