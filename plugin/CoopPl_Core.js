@@ -90,7 +90,7 @@
             this._coopTargetRealX = 0;
             this._coopTargetRealY = 0;
             this._coopInitialized = false;
-            this._transparent = true;
+            this._transparent = false;
             this.setThrough(true);
             this.setPriorityType(1);
         }
@@ -145,7 +145,8 @@
         }
 
         isTransparent() {
-            return this._transparent ||
+            return !this._coopInitialized ||
+                this._transparent ||
                 !$gameMap ||
                 this._coopMapId !== $gameMap.mapId();
         }
