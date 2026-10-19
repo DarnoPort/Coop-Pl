@@ -1,0 +1,25 @@
+name: Coop-Pl CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  node-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install server dependency
+        working-directory: server
+        run: npm install --ignore-scripts
+      - name: Test packet protocol
+        working-directory: server
+        run: npm test
+      - name: Check JavaScript syntax
+        run: |
+          node --check plugin/CoopPl_Core.js
+          node --check server/src/protocol.js
+          node --check server/src/server.js
