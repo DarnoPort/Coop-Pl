@@ -80,6 +80,30 @@ class FakeGameCharacter {
     pattern() { return this._pattern; }
 }
 
+class FakeGameSwitches {
+    constructor() { this._data = []; }
+    value(id) { return Boolean(this._data[id]); }
+    setValue(id, value) {
+        if (id > 0) {
+            this._data[id] = Boolean(value);
+            this.onChange();
+        }
+    }
+    onChange() {}
+}
+
+class FakeGameVariables {
+    constructor() { this._data = []; }
+    value(id) { return this._data[id] || 0; }
+    setValue(id, value) {
+        if (id > 0) {
+            this._data[id] = typeof value === "number" ? Math.floor(value) : value;
+            this.onChange();
+        }
+    }
+    onChange() {}
+}
+
 class FakeSceneMap {
     start() {}
     update() {}
@@ -140,18 +164,27 @@ function makeRuntime() {
                 PlayerName: "Local",
                 AutoConnect: "true",
                 SendIntervalFrames: "6",
-                ReconnectDelayMs: "3000"
+                ReconnectDelayMs: "3000",
+                SyncSwitchesVariables: "true"
             }),
             registerCommand(pluginName, commandName, callback) {
                 commands.set(commandName, callback);
             }
         },
         Game_Character: FakeGameCharacter,
+        Game_Switches: FakeGameSwitches,
+        Game_Variables: FakeGameVariables,
         Scene_Map: FakeSceneMap,
         Spriteset_Map: FakeSpritesetMap,
         Sprite_Character: FakeSpriteCharacter,
         $gamePlayer: player,
         $gameMap: map,
+        $gameSwitches: new FakeGameSwitches(),
+        $gameVariables: new FakeGameVariables(),
+        $dataSystem: {
+            switches: Array(32).fill(""),
+            variables: Array(32).fill("")
+        },
         Graphics: { frameCount: 10 }
     });
 
@@ -223,4 +256,70 @@ test("plugin registers connect and disconnect event commands", () => {
     const runtime = makeRuntime();
     assert.equal(typeof runtime.commands.get("Connect"), "function");
     assert.equal(typeof runtime.commands.get("Disconnect"), "function");
+});
+
+
+test("guest requests shared switch and variable changes; authoritative updates apply without echo", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+
+    socket.receive({
+        type: "welcome",
+        playerId: "guest-id",
+        room: "TEST_ROOM",
+        hostId: "host-id",
+        isHost: false,
+        players: [],
+        world: {
+            revision: 3,
+            switches: { "2": true },
+            variables: { "3": 42 }
+        }
+    });
+
+    assert.equal(runtime.context.$gameSwitches.value(2), true);
+    assert.equal(runtime.context.$gameVariables.value(3), 42);
+    assert.equal(runtime.windowObject.CoopPl.status().worldRevision, 3);
+
+    runtime.context.$gameSwitches.setValue(5, true);
+    assert.equal(runtime.context.$gameSwitches.value(5), false,
+        "guest change is not applied optimistically");
+    assert.equal(socket.sent.at(-1).type, "world_request");
+    assert.equal(socket.sent.at(-1).kind, "switch");
+    assert.equal(socket.sent.at(-1).id, 5);
+    assert.equal(socket.sent.at(-1).value, true);
+
+    socket.receive({
+        type: "world_change",
+        revision: 4,
+        kind: "switch",
+        id: 5,
+        value: true
+    });
+    assert.equal(runtime.context.$gameSwitches.value(5), true);
+    assert.equal(runtime.windowObject.CoopPl.status().worldRevision, 4);
+    assert.equal(socket.sent.filter(message => message.type === "world_request").length, 1,
+        "applying a server update must not echo another request");
+
+    runtime.context.$gameVariables.setValue(4, 123);
+    assert.equal(runtime.context.$gameVariables.value(4), 0);
+    assert.equal(socket.sent.at(-1).type, "world_request");
+    assert.equal(socket.sent.at(-1).kind, "variable");
+    assert.equal(socket.sent.at(-1).id, 4);
+    assert.equal(socket.sent.at(-1).value, 123);
+
+    socket.receive({
+        type: "world_change",
+        revision: 5,
+        kind: "variable",
+        id: 4,
+        value: 123
+    });
+    assert.equal(runtime.context.$gameVariables.value(4), 123);
+    assert.equal(runtime.windowObject.CoopPl.status().worldRevision, 5);
+
+    runtime.windowObject.CoopPl.disconnect();
 });
