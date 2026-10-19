@@ -10,9 +10,9 @@ const {
 } = require("../tools/prepare-test-builds");
 
 function makeFakeDeployment(folder) {
-    fs.mkdirSync(path.join(folder, "js", "plugins"), { recursive: true });
+    fs.mkdirSync(path.join(folder, "www", "js", "plugins"), { recursive: true });
     fs.writeFileSync(path.join(folder, "Game.exe"), "fake executable for file-copy test");
-    fs.writeFileSync(path.join(folder, "index.html"), "<!doctype html><title>Fake MZ export</title>");
+    fs.writeFileSync(path.join(folder, "www", "index.html"), "<!doctype html><title>Fake MZ export</title>");
     fs.writeFileSync(
         path.join(folder, "package.json"),
         JSON.stringify({
@@ -41,13 +41,13 @@ function makeFakeDeployment(folder) {
         }
     ];
     fs.writeFileSync(
-        path.join(folder, "js", "plugins.js"),
+        path.join(folder, "www", "js", "plugins.js"),
         "var $plugins = " + JSON.stringify(plugins, null, 2) + ";\n"
     );
 }
 
 function readPlugins(folder) {
-    const manifest = fs.readFileSync(path.join(folder, "js", "plugins.js"), "utf8");
+    const manifest = fs.readFileSync(path.join(folder, "www", "js", "plugins.js"), "utf8");
     const match = manifest.match(/^\s*(?:var|let|const)\s+\$plugins\s*=\s*([\s\S]*?)\s*;\s*$/);
     assert.ok(match, "MZ plugin manifest should keep its standard assignment");
     return JSON.parse(match[1]);
@@ -77,8 +77,8 @@ test("paired build preparation copies one export and configures host/guest indep
 
     for (const [role, folder] of [["Host", result.hostPath], ["Guest", result.guestPath]]) {
         assert.equal(fs.readFileSync(path.join(folder, "Game.exe"), "utf8"), "fake executable for file-copy test");
-        assert.equal(fs.readFileSync(path.join(folder, "index.html"), "utf8"), "<!doctype html><title>Fake MZ export</title>");
-        assert.equal(fs.readFileSync(path.join(folder, "js", "plugins", "CoopPl_Core.js"), "utf8"), expectedPlugin);
+        assert.equal(fs.readFileSync(path.join(folder, "www", "index.html"), "utf8"), "<!doctype html><title>Fake MZ export</title>");
+        assert.equal(fs.readFileSync(path.join(folder, "www", "js", "plugins", "CoopPl_Core.js"), "utf8"), expectedPlugin);
 
         const plugins = readPlugins(folder);
         const coopEntries = plugins.filter(plugin => plugin.name === "CoopPl_Core");
