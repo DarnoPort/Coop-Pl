@@ -37,6 +37,11 @@
  * @max 30000
  * @default 3000
  *
+ * @param SyncSwitchesVariables
+ * @text Sync shared switches and variables
+ * @type boolean
+ * @default true
+ *
  * @command Connect
  * @text Connect to co-op room
  *
@@ -50,9 +55,15 @@
  * - Connects to a Coop-Pl WebSocket server.
  * - Sends local map, position, direction and character graphics.
  * - Displays remote player sprites when they are on the same map.
+ * - Synchronizes RPG Maker switches and primitive variable values through the host.
  *
- * Not implemented yet: synchronized events, switches, variables, inventory,
- * combat, story progression, save state, authentication or secure public hosting.
+ * Switches and variables are host-authoritative: guest event commands request a
+ * change; the host applies it and the server broadcasts the accepted value.
+ * Variable values are limited to JSON-safe primitives (number, string, boolean,
+ * null); plugin-specific objects/arrays are not synchronized.
+ *
+ * Not implemented yet: event execution ownership, inventory, combat, enemies,
+ * story/save conflict handling, authentication or secure public hosting.
  *
  * Setup:
  * 1. Copy this file into your game's js/plugins/ folder.
@@ -78,7 +89,8 @@
         playerName: String(parameters.PlayerName || "Player").trim(),
         autoConnect: parameters.AutoConnect !== "false",
         sendIntervalFrames: Math.max(1, Number.parseInt(parameters.SendIntervalFrames || "6", 10) || 6),
-        reconnectDelayMs: Math.max(250, Number.parseInt(parameters.ReconnectDelayMs || "3000", 10) || 3000)
+        reconnectDelayMs: Math.max(250, Number.parseInt(parameters.ReconnectDelayMs || "3000", 10) || 3000),
+        syncSwitchesVariables: parameters.SyncSwitchesVariables !== "false"
     };
 
     const log = (...args) => console.info("[Coop-Pl]", ...args);
@@ -166,6 +178,10 @@
         lastSendFrame: 0,
         reconnectTimer: null,
         remotePlayers: new Map(),
+        applyingWorldState: false,
+        pendingWorldRequests: new Map(),
+        lastWorldRevision: 0,
+        warnedVariableTypes: new Set(),
 
         setStatus(status) {
             this.status = status;
@@ -196,6 +212,208 @@
             } catch (error) {
                 console.warn("[Coop-Pl] Send failed:", error);
                 return false;
+            }
+        },
+
+        normalizeSharedValue(value) {
+            if (value === null || typeof value === "boolean") return value;
+            if (typeof value === "number") {
+                return Number.isFinite(value) ? value : undefined;
+            }
+            if (typeof value === "string" && value.length <= 4096) return value;
+            return undefined;
+        },
+
+        normalizedVariableValue(value) {
+            return typeof value === "number" ? Math.floor(value) : value;
+        },
+
+        isValidWorldId(kind, id) {
+            if (!Number.isInteger(id) || id < 1) return false;
+            if (!$dataSystem) return false;
+            const table = kind === "switch" ? $dataSystem.switches :
+                kind === "variable" ? $dataSystem.variables : null;
+            return Array.isArray(table) && id < table.length && id <= 999999;
+        },
+
+        publishWorldChange(kind, id, value) {
+            if (!config.syncSwitchesVariables || !this.connected || !this.isHost ||
+                this.applyingWorldState || !this.isValidWorldId(kind, id)) return;
+
+            const normalized = kind === "variable" ? this.normalizedVariableValue(value) : value;
+            if (kind === "switch" && typeof normalized !== "boolean") return;
+            if (this.normalizeSharedValue(normalized) === undefined &&
+                normalized !== null) {
+                const warningKey = kind + ":" + id;
+                if (!this.warnedVariableTypes.has(warningKey)) {
+                    this.warnedVariableTypes.add(warningKey);
+                    console.warn("[Coop-Pl] Variable " + id +
+                        " uses a non-primitive value; this value will not be synchronized.");
+                }
+                return;
+            }
+
+            this.send({
+                type: "world_change",
+                kind,
+                id,
+                value: normalized
+            });
+        },
+
+        requestWorldChange(kind, id, value) {
+            if (!config.syncSwitchesVariables || !this.connected || this.isHost ||
+                !this.isValidWorldId(kind, id)) return false;
+
+            const normalized = kind === "variable" ? this.normalizedVariableValue(value) : value;
+            if (kind === "switch" && typeof normalized !== "boolean") return false;
+            if (this.normalizeSharedValue(normalized) === undefined &&
+                normalized !== null) return false;
+
+            const key = kind + ":" + id;
+            const encoded = JSON.stringify(normalized);
+            if (this.pendingWorldRequests.get(key) === encoded) return true;
+
+            this.pendingWorldRequests.set(key, encoded);
+            const sent = this.send({
+                type: "world_request",
+                kind,
+                id,
+                value: normalized
+            });
+            if (!sent) this.pendingWorldRequests.delete(key);
+            return sent;
+        },
+
+        createWorldSnapshot() {
+            const switches = Object.create(null);
+            const variables = Object.create(null);
+
+            if ($gameSwitches && Array.isArray($gameSwitches._data) &&
+                $dataSystem && Array.isArray($dataSystem.switches)) {
+                const switchLimit = Math.min($dataSystem.switches.length, 5001);
+                for (let id = 1; id < switchLimit; id++) {
+                    if ($gameSwitches._data[id] === true) switches[String(id)] = true;
+                }
+            }
+
+            if ($gameVariables && Array.isArray($gameVariables._data) &&
+                $dataSystem && Array.isArray($dataSystem.variables)) {
+                const variableLimit = Math.min($dataSystem.variables.length, 5001);
+                for (let id = 1; id < variableLimit; id++) {
+                    const value = $gameVariables._data[id];
+                    if (value === undefined || (typeof value === "number" && value === 0)) continue;
+                    const normalized = this.normalizeSharedValue(value);
+                    if (normalized === undefined) {
+                        const warningKey = "snapshot:" + id;
+                        if (!this.warnedVariableTypes.has(warningKey)) {
+                            this.warnedVariableTypes.add(warningKey);
+                            console.warn("[Coop-Pl] Variable " + id +
+                                " uses a non-primitive value; it is omitted from shared snapshots.");
+                        }
+                        continue;
+                    }
+                    variables[String(id)] = normalized;
+                }
+            }
+
+            return { switches, variables };
+        },
+
+        sendWorldSnapshot() {
+            if (!config.syncSwitchesVariables || !this.connected || !this.isHost) return;
+            const world = this.createWorldSnapshot();
+            const encoded = JSON.stringify(world);
+            if (encoded.length > 220 * 1024) {
+                this.setStatus("shared world snapshot is too large to send");
+                return;
+            }
+            this.send({ type: "world_snapshot", world });
+        },
+
+        applyWorldSnapshot(world) {
+            if (!config.syncSwitchesVariables || !world ||
+                typeof world !== "object" ||
+                !world.switches || typeof world.switches !== "object" ||
+                !world.variables || typeof world.variables !== "object") return;
+
+            this.applyingWorldState = true;
+            try {
+                if ($gameSwitches) {
+                    $gameSwitches._data = [];
+                    for (const [rawId, value] of Object.entries(world.switches)) {
+                        const id = Number(rawId);
+                        if (this.isValidWorldId("switch", id) && typeof value === "boolean") {
+                            $gameSwitches._data[id] = value;
+                        }
+                    }
+                    if (typeof $gameSwitches.onChange === "function") $gameSwitches.onChange();
+                }
+
+                if ($gameVariables) {
+                    $gameVariables._data = [];
+                    for (const [rawId, value] of Object.entries(world.variables)) {
+                        const id = Number(rawId);
+                        const normalized = this.normalizeSharedValue(value);
+                        if (this.isValidWorldId("variable", id) &&
+                            (normalized !== undefined || value === null)) {
+                            $gameVariables._data[id] = normalized;
+                        }
+                    }
+                    if (typeof $gameVariables.onChange === "function") $gameVariables.onChange();
+                }
+            } finally {
+                this.applyingWorldState = false;
+            }
+
+            this.lastWorldRevision = Number.isInteger(world.revision) ? world.revision : 0;
+            this.pendingWorldRequests.clear();
+        },
+
+        applyWorldChange(message) {
+            if (!config.syncSwitchesVariables || !message ||
+                !Number.isInteger(message.revision) ||
+                message.revision <= this.lastWorldRevision) return;
+
+            const kind = message.kind;
+            const id = message.id;
+            const value = message.value;
+            if (!this.isValidWorldId(kind, id)) return;
+            const normalized = kind === "variable" ? this.normalizedVariableValue(value) : value;
+            if (kind === "switch" && typeof normalized !== "boolean") return;
+            if (this.normalizeSharedValue(normalized) === undefined &&
+                normalized !== null) return;
+
+            this.applyingWorldState = true;
+            try {
+                if (kind === "switch") {
+                    $gameSwitches.setValue(id, normalized);
+                } else {
+                    $gameVariables.setValue(id, normalized);
+                }
+            } finally {
+                this.applyingWorldState = false;
+            }
+
+            this.lastWorldRevision = message.revision;
+            this.pendingWorldRequests.delete(kind + ":" + id);
+        },
+
+        handleWorldRequest(message) {
+            if (!config.syncSwitchesVariables || !this.connected || !this.isHost ||
+                !message || !this.isValidWorldId(message.kind, message.id)) return;
+
+            const normalized = message.kind === "variable"
+                ? this.normalizedVariableValue(message.value)
+                : message.value;
+            if (message.kind === "switch" && typeof normalized !== "boolean") return;
+            if (this.normalizeSharedValue(normalized) === undefined &&
+                normalized !== null) return;
+
+            if (message.kind === "switch") {
+                $gameSwitches.setValue(message.id, normalized);
+            } else {
+                $gameVariables.setValue(message.id, normalized);
             }
         },
 
@@ -332,6 +550,12 @@
                     this.isHost = Boolean(message.isHost);
                     this.remotePlayers.clear();
 
+                    if (message.world && (!this.isHost ||
+                        (Number.isInteger(message.world.revision) && message.world.revision > 0))) {
+                        this.applyWorldSnapshot(message.world);
+                    }
+                    if (this.isHost) this.sendWorldSnapshot();
+
                     for (const player of (Array.isArray(message.players) ? message.players : [])) {
                         this.upsertRemote(player);
                     }
@@ -366,9 +590,24 @@
                     this.remotePlayers.delete(String(message.playerId || ""));
                     log("player left:", message.playerId);
                     break;
+                case "world_snapshot":
+                    if (!this.isHost) this.applyWorldSnapshot(message.world);
+                    break;
+                case "world_snapshot_ack":
+                    if (Number.isInteger(message.revision)) {
+                        this.lastWorldRevision = message.revision;
+                    }
+                    break;
+                case "world_change":
+                    this.applyWorldChange(message);
+                    break;
+                case "world_request":
+                    this.handleWorldRequest(message);
+                    break;
                 case "host_changed":
                     this.hostId = String(message.hostId || "");
                     this.isHost = this.localId === this.hostId;
+                    if (this.isHost) this.sendWorldSnapshot();
                     this.setStatus(this.connected
                         ? "connected to room " + this.roomCode + (this.isHost ? " (host)" : "")
                         : this.status);
@@ -431,10 +670,61 @@
                 roomCode: this.roomCode,
                 localId: this.localId,
                 isHost: this.isHost,
-                remotePlayerCount: this.remotePlayers.size
+                remotePlayerCount: this.remotePlayers.size,
+                worldRevision: this.lastWorldRevision,
+                worldSyncEnabled: config.syncSwitchesVariables
             };
         }
     };
+
+    if (typeof Game_Switches !== "undefined") {
+        const _Game_Switches_setValue = Game_Switches.prototype.setValue;
+        Game_Switches.prototype.setValue = function(switchId, value) {
+            const id = Number(switchId);
+            const normalized = Boolean(value);
+
+            if (config.syncSwitchesVariables && network.connected &&
+                !network.applyingWorldState && !network.isHost &&
+                network.isValidWorldId("switch", id)) {
+                const current = this.value(id);
+                if (current !== normalized) network.requestWorldChange("switch", id, normalized);
+                return;
+            }
+
+            const result = _Game_Switches_setValue.call(this, switchId, value);
+            if (!network.applyingWorldState && config.syncSwitchesVariables &&
+                network.connected && network.isHost && network.isValidWorldId("switch", id)) {
+                network.publishWorldChange("switch", id, normalized);
+            }
+            return result;
+        };
+    }
+
+    if (typeof Game_Variables !== "undefined") {
+        const _Game_Variables_setValue = Game_Variables.prototype.setValue;
+        Game_Variables.prototype.setValue = function(variableId, value) {
+            const id = Number(variableId);
+            const normalized = network.normalizedVariableValue(value);
+            const shareable = network.normalizeSharedValue(normalized) !== undefined ||
+                normalized === null;
+
+            if (config.syncSwitchesVariables && network.connected &&
+                !network.applyingWorldState && !network.isHost &&
+                network.isValidWorldId("variable", id) && shareable) {
+                const rawCurrent = this._data[id];
+                const current = rawCurrent === undefined ? 0 : rawCurrent;
+                if (current !== normalized) network.requestWorldChange("variable", id, normalized);
+                return;
+            }
+
+            const result = _Game_Variables_setValue.call(this, variableId, value);
+            if (!network.applyingWorldState && config.syncSwitchesVariables &&
+                network.connected && network.isHost && network.isValidWorldId("variable", id)) {
+                network.publishWorldChange("variable", id, normalized);
+            }
+            return result;
+        };
+    }
 
     PluginManager.registerCommand(PLUGIN_NAME, "Connect", () => network.connect());
     PluginManager.registerCommand(PLUGIN_NAME, "Disconnect", () => network.disconnect(true));
