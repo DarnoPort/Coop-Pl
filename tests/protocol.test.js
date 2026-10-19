@@ -6,7 +6,10 @@ const {
     normalizeRoomCode,
     normalizePlayerName,
     normalizeState,
-    normalizeSequence
+    normalizeSequence,
+    normalizeWorldValue,
+    normalizeWorldSnapshot,
+    normalizeWorldChange
 } = require("../server/src/protocol");
 
 test("room codes accept short ASCII identifiers and reject invalid input", () => {
@@ -73,4 +76,50 @@ test("sequence numbers must be safe non-negative integers", () => {
     assert.equal(normalizeSequence(-1), null);
     assert.equal(normalizeSequence(1.5), null);
     assert.equal(normalizeSequence(Number.MAX_SAFE_INTEGER + 1), null);
+});
+
+
+test("world snapshots accept sparse switches and JSON-safe variable values", () => {
+    const normalized = normalizeWorldSnapshot({
+        switches: { "2": true, "10": false },
+        variables: { "1": 42, "3": "chapter two", "4": false, "5": null }
+    });
+
+    assert.ok(normalized);
+    assert.equal(normalized.switches["2"], true);
+    assert.equal(normalized.switches["10"], false);
+    assert.equal(normalized.variables["1"], 42);
+    assert.equal(normalized.variables["3"], "chapter two");
+    assert.equal(normalized.variables["4"], false);
+    assert.equal(normalized.variables["5"], null);
+});
+
+test("world snapshots reject invalid ids, non-boolean switches and unsupported values", () => {
+    assert.equal(normalizeWorldSnapshot({ switches: { "0": true }, variables: {} }), null);
+    assert.equal(normalizeWorldSnapshot({ switches: { "1": 1 }, variables: {} }), null);
+    assert.equal(normalizeWorldSnapshot({ switches: {}, variables: { "1": { nested: true } } }), null);
+    assert.equal(normalizeWorldSnapshot({ switches: {}, variables: { "../x": 1 } }), null);
+    assert.equal(normalizeWorldSnapshot({ switches: {}, variables: { "1": "x".repeat(4097) } }), null);
+});
+
+test("world changes validate type, id, and JSON-safe values", () => {
+    assert.deepEqual(normalizeWorldChange({ kind: "switch", id: 12, value: true }), {
+        kind: "switch", id: 12, value: true
+    });
+    assert.deepEqual(normalizeWorldChange({ kind: "variable", id: 2, value: "value" }), {
+        kind: "variable", id: 2, value: "value"
+    });
+    assert.equal(normalizeWorldChange({ kind: "switch", id: 1, value: 5 }), null);
+    assert.equal(normalizeWorldChange({ kind: "plugin", id: 1, value: true }), null);
+    assert.equal(normalizeWorldChange({ kind: "variable", id: 0, value: 1 }), null);
+    assert.equal(normalizeWorldChange({ kind: "variable", id: 2, value: [] }), null);
+});
+
+test("world values preserve primitive types and reject non-finite numbers", () => {
+    assert.equal(normalizeWorldValue(null), null);
+    assert.equal(normalizeWorldValue(false), false);
+    assert.equal(normalizeWorldValue(17), 17);
+    assert.equal(normalizeWorldValue("ok"), "ok");
+    assert.equal(normalizeWorldValue(Infinity), null);
+    assert.equal(normalizeWorldValue({}), null);
 });
