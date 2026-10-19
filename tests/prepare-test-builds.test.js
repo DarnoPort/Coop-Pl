@@ -96,7 +96,10 @@ test("paired build preparation copies one export and configures host/guest indep
 
         const packageJson = JSON.parse(fs.readFileSync(path.join(folder, "package.json"), "utf8"));
         assert.match(packageJson["chromium-args"], /--force-color-profile=srgb/);
-        assert.match(packageJson["chromium-args"], new RegExp("--user-data-dir='.\\\\nwjs-profile-" + role.toLowerCase() + "'"));
+        assert.equal(
+            packageJson["chromium-args"],
+            "--force-color-profile=srgb --user-data-dir='.\\nwjs-profile-" + role.toLowerCase() + "'"
+        );
         assert.equal((packageJson["chromium-args"].match(/--user-data-dir/g) || []).length, 1);
         assert.doesNotMatch(packageJson["chromium-args"], /old-profile/);
     }
