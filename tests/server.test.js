@@ -129,3 +129,97 @@ test("room server assigns host, sends player snapshots, relays state and removes
     const leftMessage = await leftPromise;
     assert.equal(leftMessage.playerId, secondWelcome.playerId);
 });
+
+
+test("server keeps host-authoritative world state and routes guest requests to host", async t => {
+    const instance = startServer({
+        host: "127.0.0.1",
+        port: 0,
+        maxPlayers: 3,
+        maxClients: 4
+    });
+
+    let host;
+    let guest;
+    t.after(async () => {
+        if (host && host.readyState === WebSocket.OPEN) host.close();
+        if (guest && guest.readyState === WebSocket.OPEN) guest.close();
+        await instance.close();
+    });
+
+    await once(instance.wss, "listening");
+    const address = instance.wss.address();
+    assert.ok(address && typeof address === "object");
+    const url = "ws://127.0.0.1:" + address.port;
+
+    host = new WebSocket(url);
+    await once(host, "open");
+    const hostWelcomePromise = waitForType(host, "welcome");
+    host.send(JSON.stringify({
+        type: "join",
+        room: "WORLD_TEST",
+        name: "Host",
+        seq: 0,
+        state: makeState(2, 2)
+    }));
+    const hostWelcome = await hostWelcomePromise;
+    assert.equal(hostWelcome.isHost, true);
+
+    const snapshotAckPromise = waitForType(host, "world_snapshot_ack");
+    host.send(JSON.stringify({
+        type: "world_snapshot",
+        world: {
+            switches: { "2": true },
+            variables: { "3": 42 }
+        }
+    }));
+    const snapshotAck = await snapshotAckPromise;
+    assert.equal(snapshotAck.revision, 1);
+
+    guest = new WebSocket(url);
+    await once(guest, "open");
+    const guestWelcomePromise = waitForType(guest, "welcome");
+    const hostJoinedPromise = waitForType(host, "player_joined");
+    guest.send(JSON.stringify({
+        type: "join",
+        room: "WORLD_TEST",
+        name: "Guest",
+        seq: 0,
+        state: makeState(4, 4)
+    }));
+    const [guestWelcome] = await Promise.all([guestWelcomePromise, hostJoinedPromise]);
+    assert.equal(guestWelcome.world.revision, 1);
+    assert.equal(guestWelcome.world.switches["2"], true);
+    assert.equal(guestWelcome.world.variables["3"], 42);
+
+    const requestPromise = waitForType(host, "world_request");
+    guest.send(JSON.stringify({
+        type: "world_request",
+        kind: "switch",
+        id: 5,
+        value: true
+    }));
+    const request = await requestPromise;
+    assert.equal(request.playerId, guestWelcome.playerId);
+    assert.equal(request.kind, "switch");
+    assert.equal(request.id, 5);
+    assert.equal(request.value, true);
+
+    const hostChangePromise = waitForType(host, "world_change");
+    const guestChangePromise = waitForType(guest, "world_change");
+    host.send(JSON.stringify({
+        type: "world_change",
+        kind: "switch",
+        id: request.id,
+        value: request.value
+    }));
+    const [hostChange, guestChange] = await Promise.all([
+        hostChangePromise,
+        guestChangePromise
+    ]);
+    assert.equal(hostChange.revision, 2);
+    assert.equal(guestChange.revision, 2);
+    assert.equal(guestChange.id, 5);
+    assert.equal(guestChange.value, true);
+    assert.equal(instance.rooms.get("WORLD_TEST").world.switches["5"], true);
+});
