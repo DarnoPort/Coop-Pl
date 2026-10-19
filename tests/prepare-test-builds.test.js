@@ -1,0 +1,124 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const {
+    prepareTestBuilds
+} = require("../tools/prepare-test-builds");
+
+function makeFakeDeployment(folder) {
+    fs.mkdirSync(path.join(folder, "js", "plugins"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "Game.exe"), "fake executable for file-copy test");
+    fs.writeFileSync(path.join(folder, "index.html"), "<!doctype html><title>Fake MZ export</title>");
+    fs.writeFileSync(
+        path.join(folder, "package.json"),
+        JSON.stringify({
+            name: "test-game",
+            main: "www/index.html",
+            "chromium-args": "--force-color-profile=srgb --user-data-dir='.\\old-profile'"
+        }, null, 2) + "\n"
+    );
+
+    const plugins = [
+        {
+            name: "CoopPl_Core",
+            status: false,
+            description: "old plugin entry",
+            parameters: {
+                ServerUrl: "ws://127.0.0.1:8080",
+                RoomCode: "OLD",
+                PlayerName: "Old"
+            }
+        },
+        {
+            name: "OtherPlugin",
+            status: true,
+            description: "unrelated plugin",
+            parameters: { Example: "keep me" }
+        }
+    ];
+    fs.writeFileSync(
+        path.join(folder, "js", "plugins.js"),
+        "var $plugins = " + JSON.stringify(plugins, null, 2) + ";\n"
+    );
+}
+
+function readPlugins(folder) {
+    const manifest = fs.readFileSync(path.join(folder, "js", "plugins.js"), "utf8");
+    const match = manifest.match(/^\s*(?:var|let|const)\s+\$plugins\s*=\s*([\s\S]*?)\s*;\s*$/);
+    assert.ok(match, "MZ plugin manifest should keep its standard assignment");
+    return JSON.parse(match[1]);
+}
+
+test("paired build preparation copies one export and configures host/guest independently", t => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "coop-pl-build-test-"));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+
+    const source = path.join(temp, "source");
+    const output = path.join(temp, "paired");
+    makeFakeDeployment(source);
+    const originalPackage = fs.readFileSync(path.join(source, "package.json"), "utf8");
+    const realPluginPath = path.join(__dirname, "..", "plugin", "CoopPl_Core.js");
+    const expectedPlugin = fs.readFileSync(realPluginPath, "utf8");
+
+    const result = prepareTestBuilds({
+        sourcePath: source,
+        outputRoot: output,
+        pluginSourcePath: realPluginPath,
+        serverUrl: "ws://127.0.0.1:8080",
+        roomCode: "COOP_TEST"
+    });
+
+    assert.equal(result.hostPath, path.join(output, "Host"));
+    assert.equal(result.guestPath, path.join(output, "Guest"));
+
+    for (const [role, folder] of [["Host", result.hostPath], ["Guest", result.guestPath]]) {
+        assert.equal(fs.readFileSync(path.join(folder, "Game.exe"), "utf8"), "fake executable for file-copy test");
+        assert.equal(fs.readFileSync(path.join(folder, "index.html"), "utf8"), "<!doctype html><title>Fake MZ export</title>");
+        assert.equal(fs.readFileSync(path.join(folder, "js", "plugins", "CoopPl_Core.js"), "utf8"), expectedPlugin);
+
+        const plugins = readPlugins(folder);
+        const coopEntries = plugins.filter(plugin => plugin.name === "CoopPl_Core");
+        assert.equal(coopEntries.length, 1, "there must be exactly one Coop-Pl entry");
+        assert.equal(coopEntries[0].status, true);
+        assert.equal(coopEntries[0].parameters.ServerUrl, "ws://127.0.0.1:8080");
+        assert.equal(coopEntries[0].parameters.RoomCode, "COOP_TEST");
+        assert.equal(coopEntries[0].parameters.PlayerName, role);
+        assert.equal(coopEntries[0].parameters.SyncSwitchesVariables, "true");
+        assert.deepEqual(
+            plugins.find(plugin => plugin.name === "OtherPlugin").parameters,
+            { Example: "keep me" },
+            "unrelated plugins should remain untouched"
+        );
+
+        const packageJson = JSON.parse(fs.readFileSync(path.join(folder, "package.json"), "utf8"));
+        assert.match(packageJson["chromium-args"], /--force-color-profile=srgb/);
+        assert.match(packageJson["chromium-args"], new RegExp("--user-data-dir='.\\\\\\\\nwjs-profile-" + role.toLowerCase() + "'"));
+        assert.equal((packageJson["chromium-args"].match(/--user-data-dir/g) || []).length, 1);
+        assert.doesNotMatch(packageJson["chromium-args"], /old-profile/);
+    }
+
+    const hostPackage = JSON.parse(fs.readFileSync(path.join(result.hostPath, "package.json"), "utf8"));
+    const guestPackage = JSON.parse(fs.readFileSync(path.join(result.guestPath, "package.json"), "utf8"));
+    assert.notEqual(hostPackage["chromium-args"], guestPackage["chromium-args"]);
+    assert.equal(fs.readFileSync(path.join(source, "package.json"), "utf8"), originalPackage,
+        "the original export must not be modified");
+});
+
+test("paired build preparation refuses to overwrite an existing Host/Guest output", t => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "coop-pl-build-guard-"));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+
+    const source = path.join(temp, "source");
+    const output = path.join(temp, "paired");
+    makeFakeDeployment(source);
+    prepareTestBuilds({ sourcePath: source, outputRoot: output });
+
+    assert.throws(
+        () => prepareTestBuilds({ sourcePath: source, outputRoot: output }),
+        /already exists/
+    );
+});
