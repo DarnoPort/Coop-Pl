@@ -307,6 +307,7 @@ function makeRuntime() {
         $gameVariables: new FakeGameVariables(),
         $gameSelfSwitches: null,
         $gameMessage: new FakeGameMessage(),
+        $dataCommonEvents: [null],
         $dataSystem: {
             switches: Array(32).fill(""),
             variables: Array(32).fill("")
