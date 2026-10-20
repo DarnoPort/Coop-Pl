@@ -1679,6 +1679,27 @@
     }
 
     if (typeof Window_ChoiceList !== "undefined") {
+        // Window_ChoiceList.start() selects RPG Maker's local default row. If the
+        // host result arrived while the guest was still dismissing earlier text,
+        // applySharedChoiceResult() may have selected the host row before start()
+        // runs. Re-apply it after the native start logic so the guest sees the
+        // authoritative result instead of a misleading default selection.
+        const _Window_ChoiceList_start = Window_ChoiceList.prototype.start;
+        if (typeof _Window_ChoiceList_start === "function") {
+            Window_ChoiceList.prototype.start = function() {
+                const result = _Window_ChoiceList_start.apply(this, arguments);
+                const active = network.connected && !network.isHost
+                    ? network.activeRemoteChoice : null;
+                if (active && network.remoteChoiceResolved &&
+                    Number.isInteger(active.result) &&
+                    active.result >= 0 && active.result < active.choices.length &&
+                    typeof this.select === "function") {
+                    this.select(active.result);
+                }
+                return result;
+            };
+        }
+
         const _Window_ChoiceList_processHandling = Window_ChoiceList.prototype.processHandling;
         if (typeof _Window_ChoiceList_processHandling === "function") {
             Window_ChoiceList.prototype.processHandling = function() {
