@@ -58,3 +58,36 @@ RPG Maker MZ client B ── WebSocket ──┘
 3. Синхронизировать действия через host-authority и подавлять повторный запуск event-команд на гостях.
 4. Определить стратегию для боёв, переходов между картами, позднего подключения и восстановления после разрыва соединения.
 5. Только после LAN-прототипа спроектировать безопасное интернет-соединение: TLS, идентификация комнаты и игроков, лимиты и проверка сетевого ввода.
+
+
+## Shared-event execution model — first implementation (2026-10-20)
+
+The room host owns shared map-event execution. A guest can request activation of a map
+event whose trigger is Action Button, Player Touch, or Event Touch. The server routes the
+request to the host and locks that event key until the host's main map interpreter finishes
+the event. The host verifies that it is on the same map, the event exists and is triggerable,
+and the requester is within a basic tile range. If the event is busy, missing, or out of
+range, the request is rejected rather than executed a second time.
+
+Shared parallel map events and parallel common events are suppressed on guests. A guest
+calling a trigger-None common event requests execution on the host and waits for the host
+to report completion. Shared autorun common events remain host-owned. The server only
+routes validated requests and maintains event locks; it does not run game scripts.
+
+Add a comment command containing \`<CoopLocal>\` to an event or common event to keep its
+commands local to each client. Use this only for visual/player-specific effects, not shared
+rewards or shared story state.
+
+Self-switches \`[mapId,eventId,A-D]\` are now part of the host-authoritative sparse world
+snapshot and incremental changes, allowing switch-controlled event pages to converge.
+
+### Current boundaries
+
+- The host must be on the same map for a guest map-event request to be accepted.
+- The host executes shared commands once, but this first layer does not replay the event
+  command list on guests. Dialogue, choices, movement routes, party inventory/gold/HP/XP,
+  battle flow, and map transfers initiated by event commands are not yet replicated.
+- Range validation uses the most recently received player position and simple tile rules;
+  counters, looping maps, custom radii, and plugin-specific triggers are not handled.
+- Pending event requests are cleared on disconnect/host migration; partially executed
+  events are not resumed after host migration.
