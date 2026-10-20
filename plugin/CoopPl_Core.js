@@ -184,6 +184,8 @@
         reconnectTimer: null,
         remotePlayers: new Map(),
         applyingWorldState: false,
+        applyingPartyState: false,
+        pendingPartySnapshot: null,
         pendingWorldRequests: new Map(),
         pendingEventRequests: new Map(),
         pendingEventKeys: new Map(),
@@ -224,6 +226,201 @@
             }
         },
 
+
+
+        createPartySnapshot() {
+            if (!$gameParty || !$gameActors) return null;
+
+            const inventorySnapshot = source => {
+                const result = {};
+                let count = 0;
+                for (const [rawId, quantity] of Object.entries(source || {})) {
+                    const id = Number(rawId);
+                    if (!Number.isInteger(id) || id < 1 || id > 999999 ||
+                        !Number.isInteger(quantity) || quantity < 1 || count >= 2000) continue;
+                    result[String(id)] = quantity;
+                    count += 1;
+                }
+                return result;
+            };
+
+            const ids = Array.isArray($gameParty._actors) ? $gameParty._actors.slice(0, 32) : [];
+            const actors = [];
+            for (const rawActorId of ids) {
+                const actorId = Number(rawActorId);
+                if (!Number.isInteger(actorId) || actorId < 1) continue;
+                const actor = $gameActors.actor(actorId);
+                if (!actor) continue;
+
+                const currentClass = typeof actor.currentClass === "function" ? actor.currentClass() : null;
+                const expValue = typeof actor.currentExp === "function" ? actor.currentExp() :
+                    (actor._exp && currentClass ? actor._exp[currentClass.id] : 0);
+                const equips = typeof actor.equips === "function" ? actor.equips() : [];
+                const normalizedEquips = (Array.isArray(equips) ? equips : []).slice(0, 16).map(item => {
+                    if (!item) return null;
+                    if ($dataWeapons && $dataWeapons[item.id] === item) return { kind: "weapon", id: item.id };
+                    if ($dataArmors && $dataArmors[item.id] === item) return { kind: "armor", id: item.id };
+                    return null;
+                });
+                const safeIds = (list, limit) => Array.isArray(list)
+                    ? list.filter(id => Number.isInteger(id) && id > 0 && id <= 999999).slice(0, limit)
+                    : [];
+                const buffs = Array.isArray(actor._buffs)
+                    ? actor._buffs.slice(0, 32).map(level =>
+                        Math.max(-2, Math.min(2, Math.trunc(Number(level) || 0))))
+                    : [];
+                const buffTurns = Array.isArray(actor._buffTurns)
+                    ? actor._buffTurns.slice(0, buffs.length).map(turns =>
+                        Math.max(0, Math.trunc(Number(turns) || 0)))
+                    : [];
+                while (buffTurns.length < buffs.length) buffTurns.push(0);
+                const stateTurns = {};
+                if (actor._stateTurns && typeof actor._stateTurns === "object") {
+                    for (const [stateId, turns] of Object.entries(actor._stateTurns)) {
+                        if (/^[1-9][0-9]{0,5}$/.test(stateId) &&
+                            Number.isInteger(turns) && turns >= 0 && turns <= 999999) {
+                            stateTurns[stateId] = turns;
+                        }
+                    }
+                }
+
+                actors.push({
+                    actorId,
+                    classId: currentClass && Number.isInteger(currentClass.id) && currentClass.id > 0
+                        ? currentClass.id : Math.max(1, Number(actor._classId) || 1),
+                    exp: Math.max(0, Math.min(1000000000000, Math.trunc(Number(expValue) || 0))),
+                    hp: Math.max(0, Math.min(9999999, Math.trunc(Number(actor.hp) || 0))),
+                    mp: Math.max(0, Math.min(9999999, Math.trunc(Number(actor.mp) || 0))),
+                    tp: Math.max(0, Math.min(100, Math.trunc(Number(actor.tp) || 0))),
+                    states: safeIds(actor._states, 128),
+                    stateTurns,
+                    skills: safeIds(actor._skills, 256),
+                    buffs,
+                    buffTurns,
+                    equips: normalizedEquips,
+                    name: typeof actor.name === "function" ? String(actor.name()).slice(0, 64) : undefined
+                });
+            }
+
+            const gold = typeof $gameParty.gold === "function" ? $gameParty.gold() : $gameParty._gold;
+            return {
+                gold: Math.max(0, Math.min(999999999, Math.trunc(Number(gold) || 0))),
+                items: inventorySnapshot($gameParty._items),
+                weapons: inventorySnapshot($gameParty._weapons),
+                armors: inventorySnapshot($gameParty._armors),
+                actors
+            };
+        },
+
+        sendPartySnapshot() {
+            if (!this.connected || !this.isHost || !this.socket || !$gameParty) return false;
+            const party = this.createPartySnapshot();
+            if (!party) return false;
+            if (JSON.stringify(party).length > 220 * 1024) {
+                console.warn("[Coop-Pl] Party snapshot is too large; it was not sent.");
+                return false;
+            }
+            return this.send({ type: "party_snapshot", party });
+        },
+
+        applyPartySnapshot(snapshot) {
+            if (this.isHost || !snapshot || typeof snapshot !== "object" || !$gameParty) return false;
+            if (typeof $gameParty.inBattle === "function" && $gameParty.inBattle()) {
+                this.pendingPartySnapshot = snapshot;
+                return false;
+            }
+            if (!Array.isArray(snapshot.actors) || snapshot.actors.length > 32 ||
+                !Number.isInteger(snapshot.gold) || snapshot.gold < 0) return false;
+
+            this.applyingPartyState = true;
+            try {
+                const party = $gameParty;
+                if (Array.isArray(party._actors) &&
+                    typeof party.removeActor === "function" &&
+                    typeof party.addActor === "function") {
+                    for (const actorId of party._actors.slice()) party.removeActor(actorId);
+                    for (const state of snapshot.actors) {
+                        if (state && Number.isInteger(state.actorId) && state.actorId > 0) {
+                            party.addActor(state.actorId);
+                        }
+                    }
+                }
+
+                const copyInventory = source => {
+                    const result = {};
+                    if (!source || typeof source !== "object" || Array.isArray(source)) return result;
+                    for (const [rawId, quantity] of Object.entries(source)) {
+                        if (/^[1-9][0-9]{0,5}$/.test(rawId) &&
+                            Number.isInteger(quantity) && quantity > 0 && quantity <= 999999) {
+                            result[rawId] = quantity;
+                        }
+                    }
+                    return result;
+                };
+
+                for (const state of snapshot.actors) {
+                    if (!state || !Number.isInteger(state.actorId) || !Number.isInteger(state.classId)) continue;
+                    const actor = $gameActors && typeof $gameActors.actor === "function"
+                        ? $gameActors.actor(state.actorId) : null;
+                    if (!actor) continue;
+
+                    const currentClass = typeof actor.currentClass === "function" ? actor.currentClass() : null;
+                    if (currentClass && currentClass.id !== state.classId &&
+                        typeof actor.changeClass === "function") actor.changeClass(state.classId, false);
+                    if (typeof actor.changeExp === "function") actor.changeExp(state.exp, false);
+                    if (typeof actor.setName === "function" && typeof state.name === "string") {
+                        actor.setName(state.name);
+                    }
+
+                    actor._skills = Array.isArray(state.skills) ? state.skills.slice(0, 256) : [];
+                    actor._states = Array.isArray(state.states) ? state.states.slice(0, 128) : [];
+                    actor._stateTurns = state.stateTurns &&
+                        typeof state.stateTurns === "object" && !Array.isArray(state.stateTurns)
+                        ? Object.assign({}, state.stateTurns) : {};
+                    actor._buffs = Array.isArray(state.buffs) ? state.buffs.slice(0, 32) : [];
+                    actor._buffTurns = Array.isArray(state.buffTurns)
+                        ? state.buffTurns.slice(0, actor._buffs.length) : [];
+                    if (typeof actor.forceChangeEquip === "function" && Array.isArray(state.equips)) {
+                        const equips = state.equips.slice(0, 16);
+                        const slotCount = typeof actor.equips === "function" ? actor.equips().length : equips.length;
+                        for (let slot = 0; slot < Math.min(equips.length, slotCount); slot++) {
+                            const descriptor = equips[slot];
+                            let item = null;
+                            if (descriptor && descriptor.kind === "weapon" && $dataWeapons) {
+                                item = $dataWeapons[descriptor.id] || null;
+                            } else if (descriptor && descriptor.kind === "armor" && $dataArmors) {
+                                item = $dataArmors[descriptor.id] || null;
+                            }
+                            actor.forceChangeEquip(slot, item);
+                        }
+                    }
+                    if (typeof actor.refresh === "function") actor.refresh();
+                    if (typeof actor.setHp === "function") actor.setHp(state.hp);
+                    if (typeof actor.setMp === "function") actor.setMp(state.mp);
+                    if (typeof actor.setTp === "function") actor.setTp(state.tp);
+                }
+
+                party._items = copyInventory(snapshot.items);
+                party._weapons = copyInventory(snapshot.weapons);
+                party._armors = copyInventory(snapshot.armors);
+                party._gold = snapshot.gold;
+                if ($gamePlayer && typeof $gamePlayer.refresh === "function") $gamePlayer.refresh();
+                if ($gameMap && typeof $gameMap.requestRefresh === "function") $gameMap.requestRefresh();
+            } finally {
+                this.applyingPartyState = false;
+            }
+
+            this.pendingPartySnapshot = null;
+            return true;
+        },
+
+        applyPendingPartySnapshot() {
+            if (!this.pendingPartySnapshot ||
+                ($gameParty && typeof $gameParty.inBattle === "function" && $gameParty.inBattle())) return;
+            const snapshot = this.pendingPartySnapshot;
+            this.pendingPartySnapshot = null;
+            this.applyPartySnapshot(snapshot);
+        },
 
         isLocalEventData(data) {
             if (!data) return false;
@@ -390,6 +587,8 @@
             if (!interpreter) return;
             if (interpreter._coopEventKind && Number.isInteger(interpreter._coopEventMapId) &&
                 Number.isInteger(interpreter._coopEventId)) {
+                // Send state-changing event rewards before the requester's finished signal.
+                this.sendPartySnapshot();
                 this.finishSharedEvent(interpreter._coopEventKind,
                     interpreter._coopEventMapId, interpreter._coopEventId);
             }
@@ -732,6 +931,7 @@
                 this.pendingEventKeys.clear();
                 this.activeSharedEvents.clear();
                 this.pendingWorldRequests.clear();
+                this.pendingPartySnapshot = null;
                 this.setStatus("disconnected (code " + event.code + ")");
                 this.scheduleReconnect();
             });
@@ -756,6 +956,7 @@
             this.pendingEventKeys.clear();
             this.activeSharedEvents.clear();
             this.pendingWorldRequests.clear();
+            this.pendingPartySnapshot = null;
 
             if (socket && socket.readyState < WebSocket.CLOSING) {
                 try {
@@ -798,7 +999,12 @@
                         (Number.isInteger(message.world.revision) && message.world.revision > 0))) {
                         this.applyWorldSnapshot(message.world);
                     }
-                    if (this.isHost) this.sendWorldSnapshot();
+                    if (this.isHost) {
+                        this.sendWorldSnapshot();
+                        this.sendPartySnapshot();
+                    } else if (message.party) {
+                        this.applyPartySnapshot(message.party);
+                    }
 
                     for (const player of (Array.isArray(message.players) ? message.players : [])) {
                         this.upsertRemote(player);
@@ -848,6 +1054,9 @@
                 case "world_request":
                     this.handleWorldRequest(message);
                     break;
+                case "party_snapshot":
+                    if (!this.isHost) this.applyPartySnapshot(message.party);
+                    break;
                 case "event_request":
                     this.handleEventRequest(message);
                     break;
@@ -860,7 +1069,10 @@
                 case "host_changed":
                     this.hostId = String(message.hostId || "");
                     this.isHost = this.localId === this.hostId;
-                    if (this.isHost) this.sendWorldSnapshot();
+                    if (this.isHost) {
+                        this.sendWorldSnapshot();
+                        this.sendPartySnapshot();
+                    }
                     this.setStatus(this.connected
                         ? "connected to room " + this.roomCode + (this.isHost ? " (host)" : "")
                         : this.status);
@@ -1140,6 +1352,7 @@
     const _Scene_Map_update = Scene_Map.prototype.update;
     Scene_Map.prototype.update = function() {
         _Scene_Map_update.call(this);
+        network.applyPendingPartySnapshot();
         network.update();
     };
 
