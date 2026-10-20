@@ -254,6 +254,15 @@
                 !Number.isInteger(eventId) || eventId < 1) return null;
             const key = this.eventKey(kind, mapId, eventId);
             if (this.pendingEventKeys.has(key)) return this.pendingEventKeys.get(key);
+
+            // Send fresh position/map state immediately before the interaction request.
+            // This avoids stale-map rejections when a player interacts just after transfer.
+            const currentState = this.currentState();
+            if (!currentState) return null;
+            this.sequence += 1;
+            if (!this.send({ type: "state", seq: this.sequence, state: currentState })) return null;
+            this.lastSendFrame = Graphics.frameCount;
+
             this.eventRequestSequence += 1;
             const requestId = "ev-" + Date.now().toString(36) + "-" + this.eventRequestSequence.toString(36);
             this.pendingEventRequests.set(requestId, { requestId, kind, mapId, eventId, key, accepted: false });
@@ -278,13 +287,13 @@
             const dx = Number(event.x) - playerState.x;
             const dy = Number(event.y) - playerState.y;
             if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
-            if (dx === 0 && dy === 0) return true;
             if (Number(event._trigger) === 0) {
                 const facing = { 2: [0, 1], 4: [-1, 0], 6: [1, 0], 8: [0, -1] }[playerState.direction];
                 return Boolean(facing && Number(event.x) === playerState.x + facing[0] &&
                     Number(event.y) === playerState.y + facing[1]);
             }
-            return Math.abs(dx) <= 1 && Math.abs(dy) <= 1;
+            // Player Touch and Event Touch require both characters to occupy the same tile.
+            return dx === 0 && dy === 0;
         },
         sendEventResult(request, accepted, reason) {
             if (!request) return false;
