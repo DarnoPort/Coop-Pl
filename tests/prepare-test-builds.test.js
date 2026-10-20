@@ -102,6 +102,7 @@ test("paired build preparation copies one export and configures host/guest indep
             "each build should retain its independent NW.js profile"
         );
         for (const flag of [
+            "--disable-raf-throttling",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows"
