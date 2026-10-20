@@ -282,6 +282,17 @@ class FakeGameEvent extends FakeGameCharacter {
 }
 function makeRuntime() {
     FakeWebSocket.latest = null;
+    // The plugin patches engine prototypes during load. Each mock runtime needs its
+    // own subclass so hooks from one simulated client cannot leak into another test.
+    const RuntimeGameCharacter = class extends FakeGameCharacter {};
+    const RuntimeGameEvent = class extends FakeGameEvent {};
+    const RuntimeGameInterpreter = class extends FakeGameInterpreter {};
+    const RuntimeWindowChoiceList = class extends FakeWindowChoiceList {};
+    const RuntimeGameSwitches = class extends FakeGameSwitches {};
+    const RuntimeGameVariables = class extends FakeGameVariables {};
+    const RuntimeSceneMap = class extends FakeSceneMap {};
+    const RuntimeSpritesetMap = class extends FakeSpritesetMap {};
+    const RuntimeSpriteCharacter = class extends FakeSpriteCharacter {};
     const commands = new Map();
     const player = {
         x: 8,
@@ -321,20 +332,20 @@ function makeRuntime() {
                 commands.set(commandName, callback);
             }
         },
-        Game_Character: FakeGameCharacter,
-        Game_Event: FakeGameEvent,
-        Game_Interpreter: FakeGameInterpreter,
-        Window_ChoiceList: FakeWindowChoiceList,
+        Game_Character: RuntimeGameCharacter,
+        Game_Event: RuntimeGameEvent,
+        Game_Interpreter: RuntimeGameInterpreter,
+        Window_ChoiceList: RuntimeWindowChoiceList,
         SceneManager: { _scene: null },
-        Game_Switches: FakeGameSwitches,
-        Game_Variables: FakeGameVariables,
-        Scene_Map: FakeSceneMap,
-        Spriteset_Map: FakeSpritesetMap,
-        Sprite_Character: FakeSpriteCharacter,
+        Game_Switches: RuntimeGameSwitches,
+        Game_Variables: RuntimeGameVariables,
+        Scene_Map: RuntimeSceneMap,
+        Spriteset_Map: RuntimeSpritesetMap,
+        Sprite_Character: RuntimeSpriteCharacter,
         $gamePlayer: player,
         $gameMap: map,
-        $gameSwitches: new FakeGameSwitches(),
-        $gameVariables: new FakeGameVariables(),
+        $gameSwitches: new RuntimeGameSwitches(),
+        $gameVariables: new RuntimeGameVariables(),
         $gameSelfSwitches: null,
         $gameMessage: new FakeGameMessage(),
         $dataCommonEvents: [null],
