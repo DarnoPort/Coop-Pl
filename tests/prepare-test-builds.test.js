@@ -107,7 +107,7 @@ test("paired build preparation copies one export and configures host/guest indep
             "--disable-backgrounding-occluded-windows"
         ]) {
             assert.equal(
-                chromiumArgs.split(/\\s+/).filter(argument => argument === flag).length,
+                chromiumArgs.split(/\s+/).filter(argument => argument === flag).length,
                 1,
                 flag + " should appear exactly once"
             );
