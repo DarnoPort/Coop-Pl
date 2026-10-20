@@ -87,3 +87,17 @@
 ### Verification limits
 - These changes are committed to the development branch; they are not yet confirmed in the owner's real exported MZ build. Automated tests cannot fully emulate NW.js window scheduling or MZ's native message windows.
 - Existing exports do not gain the new Chromium flags just by replacing the plugin. Update `chromium-args` in both existing `package.json` files or prepare a fresh test pair with the helper.
+
+
+## 2026-10-21 — automatic guest choice acknowledgement and CI repair
+
+### Fixed / improved
+- A guest no longer needs a second Enter to dismiss a non-interactive Show Choices window after the host has selected an option. When the guest window has already started, the plugin applies and acknowledges the host result immediately; if the result arrived before native window start, it is reapplied and acknowledged after start.
+- Host cancellation is acknowledged through the guest's native cancel handling rather than confirming a local default row.
+- Corrected a false-negative assertion in `tests/prepare-test-builds.test.js`: the helper intentionally writes one Windows path separator into the runtime `--user-data-dir` argument.
+- Updated the plugin header and architecture/testing documents to match the actual choice behaviour and corrected the JSON examples for host/guest profile paths.
+
+### Verification
+- GitHub Actions run [39482096904](https://github.com/DarnoPort/Coop-Pl/actions/runs/39482096904) passed on commit `742fcace529279a0fd55f8498e634a40ab4c799c`: **30 tests passed, 0 failed**, and all JavaScript syntax checks passed.
+- Mock regressions cover a result arriving after the choice window starts, a result arriving before native start, and host cancellation.
+- **Still unverified:** the latest choice-window change has not yet been tested in two actual exported RPG Maker MZ clients. Mock-runtime checks do not prove the exact timing and closing behaviour of the native NW.js/MZ message windows.
