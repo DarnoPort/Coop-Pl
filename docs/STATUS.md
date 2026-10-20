@@ -125,6 +125,6 @@
 - Updated the manual testing guide. The plugin itself cannot enable Chromium launch flags after NW.js starts; existing test exports need their `package.json` updated and both games restarted.
 
 ### Verification status
-- The generated-file test and CI run are pending.
+- GitHub Actions run [39489497434](https://github.com/DarnoPort/Coop-Pl/actions/runs/39489497434) passed on commit `5f567a01ea15252eabf239e4970ece6569b61d59`, including `npm test` and JavaScript syntax checks.
 - A real two-client RPG Maker MZ test is still required to verify whether the background window keeps animating/updating while another application window has focus. Do not treat this runtime change as confirmed until that test passes.
 
