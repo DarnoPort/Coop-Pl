@@ -751,6 +751,22 @@ test("guest shows host choices, cannot move or select before host result, then a
     choiceWindow.processOk();
     assert.equal(choiceWindow.okCalls, 1);
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), []);
+
+    socket.receive({
+        type: "event_ui", kind: "map", mapId: 1, eventId: 8,
+        action: "show_choices", choiceId: "choice-host-cancel",
+        choices: ["Wait", "Go"], cancelType: -1, defaultType: 0,
+        positionType: 2, background: 0
+    });
+    scene.update();
+    assert.ok(runtime.windowObject.CoopPl.status().activeRemoteChoice);
+    socket.receive({
+        type: "event_choice_result", kind: "map", mapId: 1, eventId: 8,
+        choiceId: "choice-host-cancel", result: -1
+    });
+    assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null,
+        "a host cancellation must not leave the guest choice window locked");
     runtime.windowObject.CoopPl.disconnect();
 });
 

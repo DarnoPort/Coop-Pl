@@ -691,7 +691,14 @@
             const messageWindow = scene && scene._messageWindow;
             const choiceWindow = messageWindow && messageWindow._choiceListWindow;
             if (choiceWindow && typeof choiceWindow.select === "function") {
-                choiceWindow.select(result.result);
+                if (result.result >= 0) {
+                    choiceWindow.select(result.result);
+                } else if (typeof choiceWindow.processOk === "function") {
+                    // A host cancellation has no selectable row on the guest. Acknowledge
+                    // through a valid row immediately; the guest callback is intentionally a no-op.
+                    choiceWindow.select(active.defaultType >= 0 ? active.defaultType : 0);
+                    choiceWindow.processOk();
+                }
             }
             return true;
         },
