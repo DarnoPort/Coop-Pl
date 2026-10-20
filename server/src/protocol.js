@@ -165,6 +165,103 @@ function normalizeEventActivity(value) {
     return { kind: request.kind, mapId: request.mapId, eventId: request.eventId, active: value.active };
 }
 
+const MAX_PARTY_ACTORS = 16;
+const MAX_PARTY_ITEMS_PER_KIND = 2000;
+const MAX_ACTOR_STATES = 128;
+const MAX_ACTOR_SKILLS = 256;
+const MAX_EQUIP_SLOTS = 16;
+
+function normalizeIdList(value, limit) {
+    if (!Array.isArray(value) || value.length > limit) return null;
+    const result = [];
+    const seen = new Set();
+    for (const id of value) {
+        if (!boundedInteger(id, 1, 999999) || seen.has(id)) return null;
+        seen.add(id);
+        result.push(id);
+    }
+    return result;
+}
+
+function normalizeInventory(value) {
+    if (!isRecord(value)) return null;
+    const keys = Object.keys(value);
+    if (keys.length > MAX_PARTY_ITEMS_PER_KIND) return null;
+    const result = Object.create(null);
+    for (const [rawId, count] of Object.entries(value)) {
+        if (!/^[1-9][0-9]{0,5}$/.test(rawId) ||
+            !boundedInteger(Number(rawId), 1, 999999) ||
+            !boundedInteger(count, 1, 999999)) return null;
+        result[rawId] = count;
+    }
+    return result;
+}
+
+function normalizePartySnapshot(value) {
+    if (!isRecord(value) || !boundedInteger(value.gold, 0, 999999999)) return null;
+
+    const items = normalizeInventory(value.items);
+    const weapons = normalizeInventory(value.weapons);
+    const armors = normalizeInventory(value.armors);
+    if (!items || !weapons || !armors) return null;
+
+    if (!Array.isArray(value.actors) || value.actors.length > MAX_PARTY_ACTORS) return null;
+    const actorIds = new Set();
+    const actors = [];
+
+    for (const actor of value.actors) {
+        if (!isRecord(actor) ||
+            !boundedInteger(actor.actorId, 1, 999999) || actorIds.has(actor.actorId) ||
+            !boundedInteger(actor.classId, 1, 999999) ||
+            !boundedInteger(actor.exp, 0, 1000000000000) ||
+            !boundedInteger(actor.hp, 0, 9999999) ||
+            !boundedInteger(actor.mp, 0, 9999999) ||
+            !boundedInteger(actor.tp, 0, 100) ||
+            (actor.name !== undefined &&
+                (typeof actor.name !== "string" || actor.name.length > 64))) return null;
+
+        const states = normalizeIdList(actor.states, MAX_ACTOR_STATES);
+        const skills = normalizeIdList(actor.skills, MAX_ACTOR_SKILLS);
+        if (!states || !skills) return null;
+
+        if (!Array.isArray(actor.buffs) || actor.buffs.length > 32 ||
+            !actor.buffs.every(level => Number.isInteger(level) && level >= -2 && level <= 2)) return null;
+        if (!Array.isArray(actor.buffTurns) || actor.buffTurns.length !== actor.buffs.length ||
+            !actor.buffTurns.every(turns => boundedInteger(turns, 0, 999999))) return null;
+
+        if (!Array.isArray(actor.equips) || actor.equips.length > MAX_EQUIP_SLOTS) return null;
+        const equips = [];
+        for (const equip of actor.equips) {
+            if (equip === null) {
+                equips.push(null);
+                continue;
+            }
+            if (!isRecord(equip) ||
+                (equip.kind !== "weapon" && equip.kind !== "armor") ||
+                !boundedInteger(equip.id, 1, 999999)) return null;
+            equips.push({ kind: equip.kind, id: equip.id });
+        }
+
+        actorIds.add(actor.actorId);
+        actors.push({
+            actorId: actor.actorId,
+            classId: actor.classId,
+            exp: actor.exp,
+            hp: actor.hp,
+            mp: actor.mp,
+            tp: actor.tp,
+            states,
+            skills,
+            buffs: actor.buffs.slice(),
+            buffTurns: actor.buffTurns.slice(),
+            equips,
+            ...(actor.name === undefined ? {} : { name: actor.name })
+        });
+    }
+
+    return { gold: value.gold, items, weapons, armors, actors };
+}
+
 module.exports = {
     isRecord,
     normalizeRoomCode,
@@ -176,5 +273,6 @@ module.exports = {
     normalizeWorldChange,
     normalizeEventRequest,
     normalizeEventResult,
-    normalizeEventActivity
+    normalizeEventActivity,
+    normalizePartySnapshot
 };
