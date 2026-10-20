@@ -169,8 +169,8 @@ test("server keeps host-authoritative world state and routes guest requests to h
     host.send(JSON.stringify({
         type: "world_snapshot",
         world: {
-            switches: { "2": true },
-            variables: { "3": 42 }
+            switches: { "2": true }, variables: { "3": 42 },
+            selfSwitches: { "1,7,A": true }
         }
     }));
     const snapshotAck = await snapshotAckPromise;
@@ -191,6 +191,7 @@ test("server keeps host-authoritative world state and routes guest requests to h
     assert.equal(guestWelcome.world.revision, 1);
     assert.equal(guestWelcome.world.switches["2"], true);
     assert.equal(guestWelcome.world.variables["3"], 42);
+    assert.equal(guestWelcome.world.selfSwitches["1,7,A"], true);
 
     const requestPromise = waitForType(host, "world_request");
     guest.send(JSON.stringify({
@@ -222,4 +223,72 @@ test("server keeps host-authoritative world state and routes guest requests to h
     assert.equal(guestChange.id, 5);
     assert.equal(guestChange.value, true);
     assert.equal(instance.rooms.get("WORLD_TEST").world.switches["5"], true);
+
+    const ssRequestPromise = waitForType(host, "world_request");
+    guest.send(JSON.stringify({ type: "world_request", kind: "selfSwitch", key: "1,8,B", value: true }));
+    const ssRequest = await ssRequestPromise;
+    assert.equal(ssRequest.kind, "selfSwitch");
+    assert.equal(ssRequest.key, "1,8,B");
+    const hostChangePromise = waitForType(host, "world_change");
+    const guestChangePromise = waitForType(guest, "world_change");
+    host.send(JSON.stringify({ type: "world_change", kind: "selfSwitch", key: ssRequest.key, value: true }));
+    const [hostChange, guestChange] = await Promise.all([hostChangePromise, guestChangePromise]);
+    assert.equal(hostChange.revision, 3);
+    assert.equal(guestChange.key, "1,8,B");
+    assert.equal(instance.rooms.get("WORLD_TEST").world.selfSwitches["1,8,B"], true);
+});
+
+
+test("server routes guest shared-event requests to host and releases event locks", async t => {
+    const instance = startServer({ host: "127.0.0.1", port: 0, maxPlayers: 3, maxClients: 4 });
+    let host;
+    let guest;
+    t.after(async () => {
+        if (host && host.readyState === WebSocket.OPEN) host.close();
+        if (guest && guest.readyState === WebSocket.OPEN) guest.close();
+        await instance.close();
+    });
+    await once(instance.wss, "listening");
+    const address = instance.wss.address();
+    const url = "ws://127.0.0.1:" + address.port;
+    host = new WebSocket(url);
+    await once(host, "open");
+    const hostWelcome = waitForType(host, "welcome");
+    host.send(JSON.stringify({ type: "join", room: "EVENT_TEST", name: "Host", seq: 0, state: makeState(8, 6) }));
+    await hostWelcome;
+
+    guest = new WebSocket(url);
+    await once(guest, "open");
+    const guestWelcomePromise = waitForType(guest, "welcome");
+    const joinedPromise = waitForType(host, "player_joined");
+    guest.send(JSON.stringify({ type: "join", room: "EVENT_TEST", name: "Guest", seq: 0, state: makeState(8, 6) }));
+    const [guestWelcome] = await Promise.all([guestWelcomePromise, joinedPromise]);
+    const request = { requestId: "ev-test-1", kind: "map", mapId: 1, eventId: 7 };
+    const forwardedPromise = waitForType(host, "event_request");
+    guest.send(JSON.stringify({ type: "event_request", ...request }));
+    const forwarded = await forwardedPromise;
+    assert.equal(forwarded.requestId, request.requestId);
+    assert.equal(forwarded.playerId, guestWelcome.playerId);
+
+    host.send(JSON.stringify({
+        type: "event_activity", requestId: "activity-map-1-7",
+        kind: "map", mapId: 1, eventId: 7, active: true
+    }));
+    const acceptedPromise = waitForType(guest, "event_result");
+    host.send(JSON.stringify({ type: "event_result", ...request, accepted: true }));
+    assert.equal((await acceptedPromise).accepted, true);
+
+    const busyPromise = waitForType(guest, "event_result");
+    guest.send(JSON.stringify({ type: "event_request", ...request, requestId: "ev-test-2" }));
+    const busy = await busyPromise;
+    assert.equal(busy.accepted, false);
+    assert.equal(busy.reason, "EVENT_BUSY");
+
+    const finishedPromise = waitForType(guest, "event_finished");
+    host.send(JSON.stringify({
+        type: "event_activity", requestId: "activity-map-1-7",
+        kind: "map", mapId: 1, eventId: 7, active: false
+    }));
+    assert.equal((await finishedPromise).requestId, request.requestId);
+    assert.equal(instance.rooms.get("EVENT_TEST").activeEvents.size, 0);
 });
