@@ -74,10 +74,12 @@ function patchChromiumArgs(packagePath, role) {
         .replace(/\s+/g, " ")
         .trim();
 
-    // Keep test clients responsive when another game window has focus. Without
-    // these switches Chromium/NW.js can heavily throttle or pause background
-    // renderers, making host-authoritative event replies appear only on refocus.
+    // Keep test clients responsive when another game window has focus. NW.js can
+    // throttle requestAnimationFrame, timers and background renderers, making
+    // host-authoritative event replies appear only when a window regains focus.
+    // These are launch-time Chromium flags; the plugin cannot enable them later.
     const backgroundFlags = [
+        "--disable-raf-throttling",
         "--disable-background-timer-throttling",
         "--disable-renderer-backgrounding",
         "--disable-backgrounding-occluded-windows"
