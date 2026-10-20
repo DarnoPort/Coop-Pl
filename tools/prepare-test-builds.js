@@ -69,10 +69,24 @@ function patchChromiumArgs(packagePath, role) {
 
     // Remove every old profile argument so repeating this operation never creates
     // two conflicting --user-data-dir values. Preserve all unrelated Chromium args.
-    const args = oldArgs
-        .replace(/(?:^|\s)--user-data-dir(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g, " ")
-        .replace(/\s+/g, " ")
+    let args = oldArgs
+        .replace(/(?:^|\\s)--user-data-dir(?:=|\\s+)(?:"[^"]*"|'[^']*'|\\S+)/g, " ")
+        .replace(/\\s+/g, " ")
         .trim();
+
+    // Keep test clients responsive when another game window has focus. Without
+    // these switches Chromium/NW.js can heavily throttle or pause background
+    // renderers, making host-authoritative event replies appear only on refocus.
+    const backgroundFlags = [
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows"
+    ];
+    for (const flag of backgroundFlags) {
+        if (!args.split(/\\s+/).includes(flag)) {
+            args = [args, flag].filter(Boolean).join(" ");
+        }
+    }
 
     const profileArg = "--user-data-dir='.\\nwjs-profile-" + role.toLowerCase() + "'";
     packageJson["chromium-args"] = [args, profileArg].filter(Boolean).join(" ");
