@@ -266,8 +266,6 @@ test("server routes guest shared-event requests to host and releases event locks
     guest.send(JSON.stringify({ type: "join", room: "EVENT_TEST", name: "Guest", seq: 0, state: makeState(8, 6) }));
     const [guestWelcome] = await Promise.all([guestWelcomePromise, joinedPromise]);
 
-    const partyState = {
-
     const sharedUi = {
         type: "event_ui", kind: "map", mapId: 1, eventId: 7,
         action: "show_text", faceName: "Actor1", faceIndex: 0,
