@@ -190,11 +190,18 @@ class FakeWindowChoiceList {
     constructor(gameMessage) {
         this.gameMessage = gameMessage;
         this.selectedIndex = -1;
+        this.startCalls = 0;
         this.handlingCalls = 0;
         this.cursorCalls = 0;
         this.touchCalls = 0;
         this.okCalls = 0;
         this.cancelCalls = 0;
+    }
+    start() {
+        this.startCalls += 1;
+        // Simulate MZ's native start behavior, which selects the configured default.
+        const defaultIndex = this.gameMessage.defaultType >= 0 ? this.gameMessage.defaultType : 0;
+        this.select(defaultIndex);
     }
     processHandling() { this.handlingCalls += 1; }
     processCursorMove() { this.cursorCalls += 1; }
@@ -742,6 +749,8 @@ test("guest shows host choices, cannot move or select before host result, then a
     scene.update();
     assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), ["Keep", "Leave"]);
     assert.ok(runtime.windowObject.CoopPl.status().activeRemoteChoice);
+    choiceWindow.start();
+    assert.equal(choiceWindow.selectedIndex, 0, "the guest initially shows the local default before the host decides");
 
     choiceWindow.processHandling();
     choiceWindow.processCursorMove();
@@ -762,8 +771,27 @@ test("guest shows host choices, cannot move or select before host result, then a
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
     assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), []);
 
+    // Regression: the host can finish choosing while the guest is still closing
+    // an earlier text window. The host result then arrives before MZ calls start().
     socket.receive({
         type: "event_ui", kind: "map", mapId: 1, eventId: 8,
+        action: "show_choices", choiceId: "choice-host-race",
+        choices: ["Keep", "Leave"], cancelType: -2, defaultType: 0,
+        positionType: 2, background: 0
+    });
+    scene.update();
+    socket.receive({
+        type: "event_choice_result", kind: "map", mapId: 1, eventId: 8,
+        choiceId: "choice-host-race", result: 1
+    });
+    choiceWindow.start();
+    assert.equal(choiceWindow.selectedIndex, 1,
+        "MZ start must not overwrite the host's earlier result with the local default");
+    choiceWindow.processOk();
+    assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
+
+    socket.receive({
+        type: "event_ui", kind: "map", mapId: 1, eventId: 9,
         action: "show_choices", choiceId: "choice-host-cancel",
         choices: ["Wait", "Go"], cancelType: -1, defaultType: 0,
         positionType: 2, background: 0
@@ -771,7 +799,7 @@ test("guest shows host choices, cannot move or select before host result, then a
     scene.update();
     assert.ok(runtime.windowObject.CoopPl.status().activeRemoteChoice);
     socket.receive({
-        type: "event_choice_result", kind: "map", mapId: 1, eventId: 8,
+        type: "event_choice_result", kind: "map", mapId: 1, eventId: 9,
         choiceId: "choice-host-cancel", result: -1
     });
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null,
