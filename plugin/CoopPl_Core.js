@@ -68,8 +68,10 @@
  *
  * Standard Show Text commands (101/401) from host-owned shared events are mirrored
  * to guests on the same map. The host remains the only client executing event logic.
- * Choices, movement routes, battles, and event-driven map transfers are not yet
- * synchronized. The host must be on the same map for a guest map-event request.
+ * The host's choice result is authoritative; guests cannot override it and their
+ * non-interactive choice window closes automatically once the result arrives.
+ * Movement routes, battles, and event-driven map transfers are not yet synchronized.
+ * The host must be on the same map for a guest map-event request.
  *
  * Setup:
  * 1. Copy this file into your game's js/plugins/ folder.
@@ -695,11 +697,13 @@
             if (choiceWindow && typeof choiceWindow.select === "function") {
                 if (result.result >= 0) {
                     choiceWindow.select(result.result);
-                } else if (typeof choiceWindow.processOk === "function") {
-                    // A host cancellation has no selectable row on the guest. Acknowledge
-                    // through a valid row immediately; the guest callback is intentionally a no-op.
-                    choiceWindow.select(active.defaultType >= 0 ? active.defaultType : 0);
-                    choiceWindow.processOk();
+                    if (choiceWindow._coopStartedChoiceId === result.choiceId &&
+                        typeof choiceWindow.processOk === "function") {
+                        choiceWindow.processOk();
+                    }
+                } else if (choiceWindow._coopStartedChoiceId === result.choiceId &&
+                    typeof choiceWindow.processCancel === "function") {
+                    choiceWindow.processCancel();
                 }
             }
             return true;
@@ -1690,11 +1694,16 @@
                 const result = _Window_ChoiceList_start.apply(this, arguments);
                 const active = network.connected && !network.isHost
                     ? network.activeRemoteChoice : null;
+                this._coopStartedChoiceId = active ? active.choiceId : null;
                 if (active && network.remoteChoiceResolved &&
                     Number.isInteger(active.result) &&
-                    active.result >= 0 && active.result < active.choices.length &&
                     typeof this.select === "function") {
-                    this.select(active.result);
+                    if (active.result >= 0 && active.result < active.choices.length) {
+                        this.select(active.result);
+                        if (typeof this.processOk === "function") this.processOk();
+                    } else if (active.result === -1 && typeof this.processCancel === "function") {
+                        this.processCancel();
+                    }
                 }
                 return result;
             };

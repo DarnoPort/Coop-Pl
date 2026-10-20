@@ -98,7 +98,7 @@ test("paired build preparation copies one export and configures host/guest indep
         const chromiumArgs = packageJson["chromium-args"];
         assert.match(chromiumArgs, /--force-color-profile=srgb/);
         assert.ok(
-            chromiumArgs.endsWith("--user-data-dir='.\\\\nwjs-profile-" + role.toLowerCase() + "'"),
+            chromiumArgs.endsWith("--user-data-dir='.\\nwjs-profile-" + role.toLowerCase() + "'"),
             "each build should retain its independent NW.js profile"
         );
         for (const flag of [

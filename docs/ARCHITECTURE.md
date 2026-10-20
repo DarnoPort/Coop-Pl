@@ -128,9 +128,10 @@ accepts these packets only from the room host. Guests queue incoming UI until th
 window is available.
 
 For Show Choices, the host's selection is sent as an authoritative result. While waiting, the
-guest cannot move the cursor, use touch input or accept a local result. When the host chooses
-an option, the guest's window highlights that option and waits for local acknowledgement before
-displaying later queued dialogue; if the host cancels, the guest choice window is closed.
+guest cannot move the cursor, use touch input or accept a local result. When the result arrives,
+the guest's non-interactive window is automatically acknowledged and closed. If the result
+arrives before RPG Maker MZ starts the native choice window, the plugin reapplies the host's
+result after native start and then acknowledges it, avoiding a stale local default selection.
 
 This is not event-command replay. Only the host evaluates conditional branches and runs commands
 inside those branches. Checks that depend on party/inventory values, variable expansion differences,

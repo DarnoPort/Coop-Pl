@@ -725,7 +725,7 @@ test("host publishes shared choices and broadcasts the authoritative selected br
     runtime.windowObject.CoopPl.disconnect();
 });
 
-test("guest shows host choices, cannot move or select before host result, then acknowledges the host result", () => {
+test("guest shows locked host choices and automatically acknowledges the authoritative result", () => {
     const runtime = makeRuntime();
     const scene = new runtime.context.Scene_Map();
     scene.start();
@@ -764,10 +764,7 @@ test("guest shows host choices, cannot move or select before host result, then a
         choiceId: "choice-host-1", result: 1
     });
     assert.equal(choiceWindow.selectedIndex, 1);
-    choiceWindow.processHandling();
-    assert.equal(choiceWindow.handlingCalls, 1);
-    choiceWindow.processOk();
-    assert.equal(choiceWindow.okCalls, 1);
+    assert.equal(choiceWindow.okCalls, 1, "the guest automatically acknowledges the host's decision");
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
     assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), []);
 
@@ -787,8 +784,10 @@ test("guest shows host choices, cannot move or select before host result, then a
     choiceWindow.start();
     assert.equal(choiceWindow.selectedIndex, 1,
         "MZ start must not overwrite the host's earlier result with the local default");
-    choiceWindow.processOk();
+    assert.equal(choiceWindow.okCalls, 2,
+        "a host result received before native start must be acknowledged automatically");
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), []);
 
     socket.receive({
         type: "event_ui", kind: "map", mapId: 1, eventId: 9,
@@ -798,12 +797,15 @@ test("guest shows host choices, cannot move or select before host result, then a
     });
     scene.update();
     assert.ok(runtime.windowObject.CoopPl.status().activeRemoteChoice);
+    choiceWindow.start();
     socket.receive({
         type: "event_choice_result", kind: "map", mapId: 1, eventId: 9,
         choiceId: "choice-host-cancel", result: -1
     });
+    assert.equal(choiceWindow.cancelCalls, 1, "the host's cancellation should close the guest's non-interactive window");
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null,
         "a host cancellation must not leave the guest choice window locked");
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), []);
     runtime.windowObject.CoopPl.disconnect();
 });
 
