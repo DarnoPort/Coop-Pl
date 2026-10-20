@@ -9,7 +9,10 @@ const {
     normalizeState,
     normalizeSequence,
     normalizeWorldSnapshot,
-    normalizeWorldChange
+    normalizeWorldChange,
+    normalizeEventRequest,
+    normalizeEventResult,
+    normalizeEventActivity
 } = require("./protocol");
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -81,13 +84,38 @@ function startServer(options = {}) {
         if (!room) return;
         room.members.delete(peer.id);
         broadcast(room, { type: "player_left", playerId: peer.id }, peer.id);
+        for (const [requestId, request] of room.eventRequests) {
+            if (request.requesterId !== peer.id) continue;
+            room.eventRequests.delete(requestId);
+            const lock = room.activeEvents.get(request.key);
+            if (lock && lock.status === "pending" && lock.requestId === requestId) {
+                room.activeEvents.delete(request.key);
+            }
+        }
 
         if (room.hostId === peer.id) {
+            for (const request of room.eventRequests.values()) {
+                const requester = room.members.get(request.requesterId);
+                if (requester) safeSend(requester.socket, {
+                    type: "event_result", requestId: request.requestId,
+                    kind: request.kind, mapId: request.mapId, eventId: request.eventId,
+                    accepted: false, reason: "HOST_DISCONNECTED"
+                });
+            }
+            for (const lock of room.activeEvents.values()) {
+                if (lock.status !== "active" || !lock.requestId ||
+                    room.eventRequests.has(lock.requestId)) continue;
+                const requester = room.members.get(lock.requesterId);
+                if (requester) safeSend(requester.socket, {
+                    type: "event_finished", requestId: lock.requestId,
+                    kind: lock.kind, mapId: lock.mapId, eventId: lock.eventId
+                });
+            }
+            room.eventRequests.clear();
+            room.activeEvents.clear();
             const next = room.members.keys().next();
             room.hostId = next.done ? null : next.value;
-            if (room.hostId) {
-                broadcast(room, { type: "host_changed", hostId: room.hostId });
-            }
+            if (room.hostId) broadcast(room, { type: "host_changed", hostId: room.hostId });
         }
 
         if (room.members.size === 0) rooms.delete(oldRoomCode);
@@ -117,7 +145,14 @@ function startServer(options = {}) {
                 code: roomCode,
                 hostId: null,
                 members: new Map(),
-                world: { switches: Object.create(null), variables: Object.create(null), revision: 0 }
+                world: {
+                    switches: Object.create(null),
+                    variables: Object.create(null),
+                    selfSwitches: Object.create(null),
+                    revision: 0
+                },
+                activeEvents: new Map(),
+                eventRequests: new Map()
             };
             rooms.set(roomCode, room);
         }
@@ -205,6 +240,7 @@ function startServer(options = {}) {
         room.world = {
             switches: snapshot.switches,
             variables: snapshot.variables,
+            selfSwitches: snapshot.selfSwitches,
             revision: room.world.revision + 1
         };
 
@@ -247,7 +283,7 @@ function startServer(options = {}) {
             playerId: peer.id,
             playerName: peer.name,
             kind: change.kind,
-            id: change.id,
+            ...(change.kind === "selfSwitch" ? { key: change.key } : { id: change.id }),
             value: change.value
         });
     }
@@ -270,23 +306,130 @@ function startServer(options = {}) {
             return;
         }
 
-        const collection = change.kind === "switch" ? room.world.switches : room.world.variables;
-        const key = String(change.id);
+        const collection = change.kind === "switch" ? room.world.switches :
+            change.kind === "variable" ? room.world.variables : room.world.selfSwitches;
+        const key = change.kind === "selfSwitch" ? change.key : String(change.id);
         if ((change.kind === "switch" && change.value === false) ||
-            (change.kind === "variable" && change.value === 0)) {
-            delete collection[key];
-        } else {
-            collection[key] = change.value;
-        }
+            (change.kind === "variable" && change.value === 0) ||
+            (change.kind === "selfSwitch" && change.value === false)) delete collection[key];
+        else collection[key] = change.value;
 
         room.world.revision += 1;
         broadcast(room, {
             type: "world_change",
             revision: room.world.revision,
             kind: change.kind,
-            id: change.id,
+            ...(change.kind === "selfSwitch" ? { key: change.key } : { id: change.id }),
             value: change.value
         });
+    }
+
+    function eventLockKey(kind, mapId, eventId) {
+        return kind + ":" + mapId + ":" + eventId;
+    }
+    function sendEventResult(peer, request, accepted, reason) {
+        if (!peer || !request) return;
+        const result = { type: "event_result", requestId: request.requestId, kind: request.kind,
+            mapId: request.mapId, eventId: request.eventId, accepted: Boolean(accepted) };
+        if (reason) result.reason = String(reason).slice(0, 64);
+        safeSend(peer.socket, result);
+    }
+    function handleEventRequest(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before requesting a shared event.");
+            return;
+        }
+        const request = normalizeEventRequest(message);
+        const room = rooms.get(peer.roomCode);
+        if (!request || !room) {
+            sendError(peer, "INVALID_EVENT_REQUEST", "Shared event request is invalid.");
+            return;
+        }
+        if (peer.id === room.hostId) return sendEventResult(peer, request, false, "HOST_ALREADY_EXECUTES_EVENTS");
+        if (!peer.state || peer.state.mapId !== request.mapId) return sendEventResult(peer, request, false, "MAP_MISMATCH");
+        if (room.eventRequests.has(request.requestId)) return sendEventResult(peer, request, false, "DUPLICATE_REQUEST");
+        const key = eventLockKey(request.kind, request.mapId, request.eventId);
+        if (room.activeEvents.has(key)) return sendEventResult(peer, request, false, "EVENT_BUSY");
+        const host = room.members.get(room.hostId);
+        if (!host) return sendEventResult(peer, request, false, "HOST_UNAVAILABLE");
+        const lock = { ...request, key, requesterId: peer.id, hostId: room.hostId, status: "pending" };
+        room.activeEvents.set(key, lock);
+        room.eventRequests.set(request.requestId, lock);
+        safeSend(host.socket, {
+            type: "event_request", ...request,
+            playerId: peer.id, playerName: peer.name, playerState: peer.state
+        });
+    }
+    function handleEventResult(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before returning an event result.");
+            return;
+        }
+        const result = normalizeEventResult(message);
+        const room = rooms.get(peer.roomCode);
+        if (!result || !room) {
+            sendError(peer, "INVALID_EVENT_RESULT", "Shared event result is invalid.");
+            return;
+        }
+        if (peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the host may accept or reject shared events.");
+            return;
+        }
+        const pending = room.eventRequests.get(result.requestId);
+        if (!pending || pending.kind !== result.kind || pending.mapId !== result.mapId ||
+            pending.eventId !== result.eventId) {
+            sendError(peer, "UNKNOWN_EVENT_REQUEST", "No matching shared event request is pending.");
+            return;
+        }
+        room.eventRequests.delete(result.requestId);
+        const lock = room.activeEvents.get(pending.key);
+        const requester = room.members.get(pending.requesterId);
+        if (result.accepted) {
+            if (lock) lock.status = "active";
+        } else if (lock && lock.requestId === result.requestId) {
+            room.activeEvents.delete(pending.key);
+        }
+        sendEventResult(requester, result, result.accepted, result.reason);
+    }
+    function handleEventActivity(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before publishing event activity.");
+            return;
+        }
+        const activity = normalizeEventActivity(message);
+        const room = rooms.get(peer.roomCode);
+        if (!activity || !room) {
+            sendError(peer, "INVALID_EVENT_ACTIVITY", "Shared event activity is invalid.");
+            return;
+        }
+        if (peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the host may publish shared event activity.");
+            return;
+        }
+        const key = eventLockKey(activity.kind, activity.mapId, activity.eventId);
+        if (activity.active) {
+            const existing = room.activeEvents.get(key);
+            if (existing) existing.status = "active";
+            else room.activeEvents.set(key, {
+                ...activity, key, requestId: null, requesterId: null,
+                hostId: peer.id, status: "active"
+            });
+            return;
+        }
+        const lock = room.activeEvents.get(key);
+        if (!lock) return;
+        room.activeEvents.delete(key);
+        if (!lock.requestId || !lock.requesterId) return;
+        const requester = room.members.get(lock.requesterId);
+        if (room.eventRequests.has(lock.requestId)) {
+            room.eventRequests.delete(lock.requestId);
+            sendEventResult(requester, lock, false, "EVENT_ENDED_BEFORE_ACCEPTANCE");
+        } else if (requester) {
+            safeSend(requester.socket, {
+                type: "event_finished", requestId: lock.requestId,
+                kind: lock.kind, mapId: lock.mapId, eventId: lock.eventId
+            });
+        }
     }
 
     wss.on("connection", socket => {
@@ -354,6 +497,15 @@ function startServer(options = {}) {
                     break;
                 case "world_change":
                     publishWorldChange(peer, message);
+                    break;
+                case "event_request":
+                    handleEventRequest(peer, message);
+                    break;
+                case "event_result":
+                    handleEventResult(peer, message);
+                    break;
+                case "event_activity":
+                    handleEventActivity(peer, message);
                     break;
                 case "ping":
                     safeSend(socket, { type: "pong", timestamp: Date.now() });
