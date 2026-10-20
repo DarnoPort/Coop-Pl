@@ -117,12 +117,37 @@ class FakeGameMessage {
         this.background = 0;
         this.positionType = 2;
         this.texts = [];
+        this.choices = [];
+        this.choiceCallback = null;
+        this._choiceCallback = null;
+        this.choiceBackground = 0;
+        this.choicePositionType = 2;
+        this.defaultType = -1;
+        this.cancelType = -2;
     }
-    isBusy() { return this.busy; }
+    isBusy() { return this.busy || this.texts.length > 0 || this.choices.length > 0; }
     setFaceImage(name, index) { this.faceName = name; this.faceIndex = index; }
     setBackground(value) { this.background = value; }
     setPositionType(value) { this.positionType = value; }
     add(text) { this.texts.push(text); }
+    setChoices(choices, defaultType, cancelType) {
+        this.choices = choices.slice();
+        this.defaultType = defaultType;
+        this.cancelType = cancelType;
+    }
+    setChoiceBackground(value) { this.choiceBackground = value; }
+    setChoicePositionType(value) { this.choicePositionType = value; }
+    setChoiceCallback(callback) {
+        this.choiceCallback = callback;
+        this._choiceCallback = callback;
+    }
+    onChoice(result) {
+        const callback = this.choiceCallback;
+        this.choiceCallback = null;
+        this._choiceCallback = null;
+        this.choices = [];
+        if (callback) callback(result);
+    }
 }
 
 class FakeGameInterpreter {
@@ -132,16 +157,49 @@ class FakeGameInterpreter {
         this._index = 0;
         this._eventId = 0;
         this._childInterpreter = null;
+        this._lastChoice = null;
+        this.gameMessage = null;
     }
     command101() { return true; }
     command117() { return true; }
+    setupChoices(params) {
+        this.gameMessage.setChoices(params[0].slice(), params[2], params[1]);
+        this.gameMessage.setChoicePositionType(params[3] === undefined ? 2 : params[3]);
+        this.gameMessage.setChoiceBackground(params[4] === undefined ? 0 : params[4]);
+        this.gameMessage.setChoiceCallback(result => { this._lastChoice = result; });
+    }
     setupChild(list, eventId) {
         this._childInterpreter = new FakeGameInterpreter();
+        this._childInterpreter.gameMessage = this.gameMessage;
         this._childInterpreter._list = list;
         this._childInterpreter._eventId = eventId;
     }
     updateWaitMode() { return false; }
     terminate() { return true; }
+}
+
+class FakeWindowChoiceList {
+    constructor(gameMessage) {
+        this.gameMessage = gameMessage;
+        this.selectedIndex = -1;
+        this.handlingCalls = 0;
+        this.cursorCalls = 0;
+        this.touchCalls = 0;
+        this.okCalls = 0;
+        this.cancelCalls = 0;
+    }
+    processHandling() { this.handlingCalls += 1; }
+    processCursorMove() { this.cursorCalls += 1; }
+    processTouch() { this.touchCalls += 1; }
+    processOk() {
+        this.okCalls += 1;
+        this.gameMessage.onChoice(this.selectedIndex);
+    }
+    processCancel() {
+        this.cancelCalls += 1;
+        this.gameMessage.onChoice(-1);
+    }
+    select(index) { this.selectedIndex = index; }
 }
 
 class FakeSpriteCharacter {
@@ -228,6 +286,8 @@ function makeRuntime() {
         Game_Character: FakeGameCharacter,
         Game_Event: FakeGameEvent,
         Game_Interpreter: FakeGameInterpreter,
+        Window_ChoiceList: FakeWindowChoiceList,
+        SceneManager: { _scene: null },
         Game_Switches: FakeGameSwitches,
         Game_Variables: FakeGameVariables,
         Scene_Map: FakeSceneMap,
@@ -610,6 +670,87 @@ test("guest displays host Show Text packets when the message window is free", ()
     assert.equal(runtime.context.$gameMessage.faceIndex, 1);
     assert.equal(runtime.context.$gameMessage.background, 2);
     assert.equal(runtime.context.$gameMessage.positionType, 0);
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+
+test("host publishes shared choices and broadcasts the authoritative selected branch", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "host-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: true, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    const interpreter = new runtime.context.Game_Interpreter();
+    interpreter.gameMessage = runtime.context.$gameMessage;
+    interpreter._coopEventKind = "map";
+    interpreter._coopEventMapId = 1;
+    interpreter._coopEventId = 7;
+    interpreter.setupChoices([["Keep", "Leave"], -2, 0, 2, 1]);
+
+    const choicePacket = socket.sent.find(message =>
+        message.type === "event_ui" && message.action === "show_choices");
+    assert.ok(choicePacket);
+    assert.deepEqual(Array.from(choicePacket.choices), ["Keep", "Leave"]);
+    assert.equal(choicePacket.defaultType, 0);
+    assert.equal(choicePacket.background, 1);
+
+    runtime.context.$gameMessage.onChoice(1);
+    assert.equal(interpreter._lastChoice, 1);
+    const resultPacket = socket.sent.find(message => message.type === "event_choice_result");
+    assert.ok(resultPacket);
+    assert.equal(resultPacket.choiceId, choicePacket.choiceId);
+    assert.equal(resultPacket.result, 1);
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+test("guest shows host choices, cannot move or select before host result, then acknowledges the host result", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "guest-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: false, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+    const choiceWindow = new runtime.context.Window_ChoiceList(runtime.context.$gameMessage);
+    scene._messageWindow = { _choiceListWindow: choiceWindow };
+    runtime.context.SceneManager._scene = scene;
+
+    socket.receive({
+        type: "event_ui", kind: "map", mapId: 1, eventId: 7,
+        action: "show_choices", choiceId: "choice-host-1",
+        choices: ["Keep", "Leave"], cancelType: -2, defaultType: 0,
+        positionType: 2, background: 0
+    });
+    scene.update();
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.choices), ["Keep", "Leave"]);
+    assert.ok(runtime.windowObject.CoopPl.status().activeRemoteChoice);
+
+    choiceWindow.processHandling();
+    choiceWindow.processCursorMove();
+    choiceWindow.processTouch();
+    assert.equal(choiceWindow.handlingCalls, 0, "guest must not accept a choice independently");
+    assert.equal(choiceWindow.cursorCalls, 0, "guest must not move the authoritative selection");
+    assert.equal(choiceWindow.touchCalls, 0, "guest touch input must not override the host choice");
+
+    socket.receive({
+        type: "event_choice_result", kind: "map", mapId: 1, eventId: 7,
+        choiceId: "choice-host-1", result: 1
+    });
+    assert.equal(choiceWindow.selectedIndex, 1);
+    choiceWindow.processHandling();
+    assert.equal(choiceWindow.handlingCalls, 1);
+    choiceWindow.processOk();
+    assert.equal(choiceWindow.okCalls, 1);
+    assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null);
     runtime.windowObject.CoopPl.disconnect();
 });
 
