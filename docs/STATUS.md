@@ -128,3 +128,18 @@
 - GitHub Actions run [39489497434](https://github.com/DarnoPort/Coop-Pl/actions/runs/39489497434) passed on commit `5f567a01ea15252eabf239e4970ece6569b61d59`, including `npm test` and JavaScript syntax checks.
 - A real two-client RPG Maker MZ test is still required to verify whether the background window keeps animating/updating while another application window has focus. Do not treat this runtime change as confirmed until that test passes.
 
+## 2026-10-21 — scene update continues when NW.js loses focus
+
+### Root cause
+- A public MZ core-script mirror shows `SceneManager.updateScene()` calls the active scene's `update()` only if `SceneManager.isGameActive()` returns true; the stock implementation checks `window.top.document.hasFocus()`.
+- The owner confirmed that adding `--disable-raf-throttling` and the other Chromium flags did not fix the observed freeze. That is consistent with the explicit MZ focus gate: keeping animation frames scheduled does not force MZ's scene to update.
+
+### Implemented
+- In NW.js only, Coop-Pl now overrides `SceneManager.isGameActive()` to return true. This keeps map/event/sprite scene updates running in the background. Non-NW.js environments retain the original check.
+- Added an automated regression test for the NW.js override and browser fallback.
+- The manual test guide now requires replacing the plugin in both test exports and restarting both clients; existing Chromium flags can remain but were not sufficient on their own.
+
+### Verification status
+- Automated CI and syntax/test status must be recorded from the run triggered by this code change.
+- A real two-client RPG Maker MZ test is still required. Do not mark the background-window issue as fixed until the owner confirms the scene keeps updating while unfocused.
+
