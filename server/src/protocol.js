@@ -165,7 +165,7 @@ function normalizeEventActivity(value) {
     return { kind: request.kind, mapId: request.mapId, eventId: request.eventId, active: value.active };
 }
 
-const MAX_PARTY_ACTORS = 16;
+const MAX_PARTY_ACTORS = 32;
 const MAX_PARTY_ITEMS_PER_KIND = 2000;
 const MAX_ACTOR_STATES = 128;
 const MAX_ACTOR_SKILLS = 256;
@@ -224,6 +224,19 @@ function normalizePartySnapshot(value) {
         const skills = normalizeIdList(actor.skills, MAX_ACTOR_SKILLS);
         if (!states || !skills) return null;
 
+        const stateTurns = Object.create(null);
+        if (actor.stateTurns !== undefined) {
+            if (!isRecord(actor.stateTurns) || Object.keys(actor.stateTurns).length > MAX_ACTOR_STATES) {
+                return null;
+            }
+            for (const [stateId, turns] of Object.entries(actor.stateTurns)) {
+                if (!/^[1-9][0-9]{0,5}$/.test(stateId) ||
+                    !boundedInteger(Number(stateId), 1, 999999) ||
+                    !boundedInteger(turns, 0, 999999)) return null;
+                stateTurns[stateId] = turns;
+            }
+        }
+
         if (!Array.isArray(actor.buffs) || actor.buffs.length > 32 ||
             !actor.buffs.every(level => Number.isInteger(level) && level >= -2 && level <= 2)) return null;
         if (!Array.isArray(actor.buffTurns) || actor.buffTurns.length !== actor.buffs.length ||
@@ -251,6 +264,7 @@ function normalizePartySnapshot(value) {
             mp: actor.mp,
             tp: actor.tp,
             states,
+            stateTurns,
             skills,
             buffs: actor.buffs.slice(),
             buffTurns: actor.buffTurns.slice(),
