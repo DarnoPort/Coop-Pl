@@ -376,3 +376,125 @@ test("guest requests host execution for shared map events but keeps local-tagged
     assert.equal(socket.sent.filter(m => m.type === "event_request").length, 1);
     runtime.windowObject.CoopPl.disconnect();
 });
+
+
+test("guest applies authoritative party snapshot and defers it while a battle is active", () => {
+    const runtime = makeRuntime();
+    const actors = {};
+    const makeActor = actorId => ({
+        _actorId: actorId,
+        _classId: 1,
+        _expValue: 0,
+        _hp: 1,
+        _mp: 1,
+        _tp: 0,
+        _skills: [],
+        _states: [],
+        _stateTurns: {},
+        _buffs: [0, 0],
+        _buffTurns: [0, 0],
+        _equips: [null, null],
+        _name: "Actor " + actorId,
+        actorId() { return this._actorId; },
+        currentClass() { return { id: this._classId }; },
+        changeClass(id) { this._classId = id; },
+        changeExp(exp) { this._expValue = exp; },
+        setName(name) { this._name = name; },
+        name() { return this._name; },
+        equips() { return this._equips; },
+        forceChangeEquip(slot, item) { this._equips[slot] = item; },
+        refresh() {},
+        setHp(value) { this._hp = value; },
+        setMp(value) { this._mp = value; },
+        setTp(value) { this._tp = value; }
+    });
+    actors[1] = makeActor(1);
+    actors[2] = makeActor(2);
+    actors[99] = makeActor(99);
+
+    runtime.context.$gameActors = { actor(id) { return actors[id] || null; } };
+    runtime.context.$gameParty = {
+        _actors: [1, 99],
+        _gold: 0,
+        _items: {},
+        _weapons: {},
+        _armors: {},
+        _inBattle: true,
+        inBattle() { return this._inBattle; },
+        gold() { return this._gold; },
+        removeActor(id) { this._actors = this._actors.filter(actorId => actorId !== id); },
+        addActor(id) { if (!this._actors.includes(id)) this._actors.push(id); }
+    };
+    const weapon = { id: 1, wtypeId: 1, name: "Test Sword" };
+    const armor = { id: 1, atypeId: 1, name: "Test Shield" };
+    runtime.context.$dataWeapons = [null, weapon];
+    runtime.context.$dataArmors = [null, armor];
+
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "guest-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: false, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    const partySnapshot = {
+        gold: 250,
+        items: { "1": 3 },
+        weapons: {},
+        armors: { "1": 1 },
+        actors: [{
+            actorId: 1,
+            classId: 1,
+            exp: 450,
+            hp: 27,
+            mp: 11,
+            tp: 20,
+            states: [2],
+            stateTurns: { "2": 3 },
+            skills: [1, 5],
+            buffs: [0, 1],
+            buffTurns: [0, 4],
+            equips: [{ kind: "weapon", id: 1 }, null],
+            name: "Hero"
+        }, {
+            actorId: 2,
+            classId: 1,
+            exp: 0,
+            hp: 16,
+            mp: 4,
+            tp: 0,
+            states: [],
+            stateTurns: {},
+            skills: [],
+            buffs: [0, 0],
+            buffTurns: [0, 0],
+            equips: [null, { kind: "armor", id: 1 }],
+            name: "Mage"
+        }]
+    };
+
+    socket.receive({ type: "party_snapshot", party: partySnapshot });
+    assert.deepEqual(runtime.context.$gameParty._actors, [1, 99],
+        "party snapshots are queued during battle rather than mutating an active battle");
+    assert.equal(runtime.context.$gameParty._gold, 0);
+
+    runtime.context.$gameParty._inBattle = false;
+    scene.update();
+    assert.deepEqual(runtime.context.$gameParty._actors, [1, 2]);
+    assert.equal(runtime.context.$gameParty._gold, 250);
+    assert.equal(runtime.context.$gameParty._items["1"], 3);
+    assert.equal(runtime.context.$gameParty._armors["1"], 1);
+    assert.equal(actors[1]._expValue, 450);
+    assert.equal(actors[1]._hp, 27);
+    assert.equal(actors[1]._mp, 11);
+    assert.equal(actors[1]._tp, 20);
+    assert.deepEqual(actors[1]._states, [2]);
+    assert.equal(actors[1]._stateTurns["2"], 3);
+    assert.deepEqual(actors[1]._skills, [1, 5]);
+    assert.equal(actors[1]._equips[0], weapon);
+    assert.equal(actors[2]._equips[1], armor);
+    runtime.windowObject.CoopPl.disconnect();
+});
