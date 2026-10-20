@@ -277,7 +277,20 @@ test("server routes guest shared-event requests to host and releases event locks
     assert.deepEqual(guestUi.lines, sharedUi.lines);
     assert.equal(guestUi.action, "show_text");
 
-    const unauthorizedUiPromise = waitForType(guest, "error");
+    const unauthorizedUiPromise = new Promise(resolve => {
+        const onUnauthorizedError = raw => {
+            let message;
+            try {
+                message = JSON.parse(raw.toString());
+            } catch (_) {
+                return;
+            }
+            if (message.type !== "error") return;
+            guest.off("message", onUnauthorizedError);
+            resolve(message);
+        };
+        guest.on("message", onUnauthorizedError);
+    });
     guest.send(JSON.stringify(sharedUi));
     assert.equal((await unauthorizedUiPromise).code, "HOST_ONLY");
 
