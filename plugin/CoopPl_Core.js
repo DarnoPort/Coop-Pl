@@ -186,6 +186,7 @@
         lastSendFrame: 0,
         reconnectTimer: null,
         remotePlayers: new Map(),
+        mapEventLimitWarned: false,
         applyingWorldState: false,
         applyingPartyState: false,
         pendingPartySnapshot: null,
@@ -221,6 +222,157 @@
                 characterIndex: $gamePlayer.characterIndex(),
                 pattern: $gamePlayer.pattern()
             };
+        },
+
+        createMapEventStates() {
+            if (!$gameMap || typeof $gameMap.events !== "function") return null;
+            const mapEvents = $gameMap.events();
+            if (!Array.isArray(mapEvents)) return null;
+            if (mapEvents.length > 1000) {
+                if (!this.mapEventLimitWarned) {
+                    this.mapEventLimitWarned = true;
+                    console.warn("[Coop-Pl] Map has more than 1000 events; movement snapshots are disabled for this map.");
+                }
+                return null;
+            }
+
+            const events = [];
+            for (const event of mapEvents) {
+                if (!event || typeof event.eventId !== "function" || this.isLocalMapEvent(event)) continue;
+                const eventId = event.eventId();
+                const x = Number(event.x);
+                const y = Number(event.y);
+                const realX = Number(event._realX);
+                const realY = Number(event._realY);
+                const direction = typeof event.direction === "function" ? event.direction() : event._direction;
+                const characterName = typeof event.characterName === "function"
+                    ? event.characterName() : event._characterName;
+                const characterIndex = typeof event.characterIndex === "function"
+                    ? event.characterIndex() : event._characterIndex;
+                const pattern = typeof event.pattern === "function" ? event.pattern() : event._pattern;
+                const transparent = typeof event.isTransparent === "function"
+                    ? event.isTransparent() : Boolean(event._transparent);
+                const opacity = typeof event.opacity === "function"
+                    ? event.opacity() : (Number.isInteger(event._opacity) ? event._opacity : 255);
+                const priorityType = typeof event.priorityType === "function"
+                    ? event.priorityType() : (Number.isInteger(event._priorityType) ? event._priorityType : 1);
+
+                if (!Number.isInteger(eventId) || eventId < 1 || eventId > 999999 ||
+                    !Number.isInteger(x) || x < 0 || x > 99999 ||
+                    !Number.isInteger(y) || y < 0 || y > 99999 ||
+                    !Number.isFinite(realX) || realX < -100000 || realX > 100000 ||
+                    !Number.isFinite(realY) || realY < -100000 || realY > 100000 ||
+                    ![2, 4, 6, 8].includes(direction) ||
+                    typeof characterName !== "string" || characterName.length > 64 ||
+                    characterName.includes("/") || characterName.includes("\\") ||
+                    /[\u0000-\u001f\u007f]/.test(characterName) ||
+                    !Number.isInteger(characterIndex) || characterIndex < 0 || characterIndex > 7 ||
+                    !Number.isInteger(pattern) || pattern < 0 || pattern > 2 ||
+                    typeof transparent !== "boolean" ||
+                    !Number.isInteger(opacity) || opacity < 0 || opacity > 255 ||
+                    !Number.isInteger(priorityType) || priorityType < 0 || priorityType > 2) continue;
+
+                events.push({
+                    eventId, x, y, realX, realY, direction,
+                    characterName, characterIndex, pattern,
+                    transparent, opacity, priorityType,
+                    erased: Boolean(event._erased)
+                });
+            }
+            return events;
+        },
+
+        sendMapEventStates() {
+            if (!this.connected || !this.isHost || !$gameMap) return false;
+            const events = this.createMapEventStates();
+            if (!events) return false;
+            const message = { type: "event_states", mapId: $gameMap.mapId(), events };
+            if (JSON.stringify(message).length > 220 * 1024) {
+                console.warn("[Coop-Pl] Map event snapshot is too large; it was not sent.");
+                return false;
+            }
+            return this.send(message);
+        },
+
+        applyMapEventStates(message) {
+            if (!this.connected || this.isHost || !message || !$gameMap ||
+                typeof $gameMap.event !== "function" ||
+                !Number.isInteger(message.mapId) || message.mapId !== $gameMap.mapId() ||
+                !Array.isArray(message.events) || message.events.length > 1000) return false;
+
+            const seen = new Set();
+            for (const state of message.events) {
+                if (!state || !Number.isInteger(state.eventId) || state.eventId < 1 ||
+                    state.eventId > 999999 || seen.has(state.eventId) ||
+                    !Number.isInteger(state.x) || state.x < 0 || state.x > 99999 ||
+                    !Number.isInteger(state.y) || state.y < 0 || state.y > 99999 ||
+                    typeof state.realX !== "number" || !Number.isFinite(state.realX) ||
+                    state.realX < -100000 || state.realX > 100000 ||
+                    typeof state.realY !== "number" || !Number.isFinite(state.realY) ||
+                    state.realY < -100000 || state.realY > 100000 ||
+                    ![2, 4, 6, 8].includes(state.direction) ||
+                    typeof state.characterName !== "string" || state.characterName.length > 64 ||
+                    state.characterName.includes("/") || state.characterName.includes("\\") ||
+                    /[\u0000-\u001f\u007f]/.test(state.characterName) ||
+                    !Number.isInteger(state.characterIndex) || state.characterIndex < 0 || state.characterIndex > 7 ||
+                    !Number.isInteger(state.pattern) || state.pattern < 0 || state.pattern > 2 ||
+                    typeof state.transparent !== "boolean" ||
+                    !Number.isInteger(state.opacity) || state.opacity < 0 || state.opacity > 255 ||
+                    !Number.isInteger(state.priorityType) || state.priorityType < 0 || state.priorityType > 2 ||
+                    typeof state.erased !== "boolean") continue;
+                seen.add(state.eventId);
+
+                const event = $gameMap.event(state.eventId);
+                if (!event || this.isLocalMapEvent(event)) continue;
+
+                if (state.erased) {
+                    if (!event._erased && typeof event.erase === "function") event.erase();
+                    else event._erased = true;
+                } else if (event._erased) {
+                    event._erased = false;
+                    if (typeof event.refresh === "function") event.refresh();
+                }
+
+                const initialized = event._coopEventStateInitialized === true &&
+                    event._coopEventStateMapId === message.mapId;
+                const oldRealX = Number(event._realX);
+                const oldRealY = Number(event._realY);
+                const shouldSnap = !initialized || !Number.isFinite(oldRealX) ||
+                    !Number.isFinite(oldRealY) ||
+                    Math.abs(oldRealX - state.realX) > 3 ||
+                    Math.abs(oldRealY - state.realY) > 3;
+
+                event._x = state.x;
+                event._y = state.y;
+                event._coopTargetRealX = state.realX;
+                event._coopTargetRealY = state.realY;
+                event._coopEventStateMapId = message.mapId;
+                event._coopEventStateInitialized = true;
+                if (shouldSnap) {
+                    event._realX = state.realX;
+                    event._realY = state.realY;
+                }
+
+                const currentName = typeof event.characterName === "function"
+                    ? event.characterName() : event._characterName;
+                const currentIndex = typeof event.characterIndex === "function"
+                    ? event.characterIndex() : event._characterIndex;
+                if ((currentName !== state.characterName || currentIndex !== state.characterIndex) &&
+                    typeof event.setImage === "function") {
+                    event.setImage(state.characterName, state.characterIndex);
+                }
+                if (typeof event.setDirection === "function") event.setDirection(state.direction);
+                else event._direction = state.direction;
+                if (typeof event.setPattern === "function") event.setPattern(state.pattern);
+                else event._pattern = state.pattern;
+                if (typeof event.setTransparent === "function") event.setTransparent(state.transparent);
+                else event._transparent = state.transparent;
+                if (typeof event.setOpacity === "function") event.setOpacity(state.opacity);
+                else event._opacity = state.opacity;
+                if (typeof event.setPriorityType === "function") event.setPriorityType(state.priorityType);
+                else event._priorityType = state.priorityType;
+            }
+            return true;
         },
 
         send(message) {
@@ -1354,6 +1506,9 @@
                 case "event_ui":
                     if (!this.isHost) this.queueSharedEventUi(message);
                     break;
+                case "event_states":
+                    if (!this.isHost) this.applyMapEventStates(message);
+                    break;
                 case "event_choice_result":
                     if (!this.isHost) this.receiveSharedChoiceResult(message);
                     break;
@@ -1433,6 +1588,7 @@
                 seq: this.sequence,
                 state
             });
+            if (this.isHost) this.sendMapEventStates();
         },
 
         getStatus() {
@@ -1505,6 +1661,20 @@
 
 
     if (typeof Game_Event !== "undefined") {
+        if (typeof Game_Event.prototype.updateSelfMovement === "function") {
+            const _Game_Event_updateSelfMovement = Game_Event.prototype.updateSelfMovement;
+            Game_Event.prototype.updateSelfMovement = function() {
+                const host = network.hostId ? network.remotePlayers.get(network.hostId) : null;
+                const currentMapId = $gameMap && typeof $gameMap.mapId === "function"
+                    ? $gameMap.mapId() : null;
+                const hostOnThisMap = host && host.character &&
+                    host.character._coopMapId === currentMapId;
+                if (network.connected && !network.isHost && hostOnThisMap &&
+                    !network.isLocalMapEvent(this)) return;
+                return _Game_Event_updateSelfMovement.apply(this, arguments);
+            };
+        }
+
         const _Game_Event_start = Game_Event.prototype.start;
         Game_Event.prototype.start = function() {
             const mapId = $gameMap ? $gameMap.mapId() : this._mapId;
@@ -1778,7 +1948,29 @@
     const _Spriteset_Map_update = Spriteset_Map.prototype.update;
     Spriteset_Map.prototype.update = function() {
         _Spriteset_Map_update.call(this);
+        this.updateCoopEventStates();
         this.updateCoopRemoteSprites();
+    };
+
+    Spriteset_Map.prototype.updateCoopEventStates = function() {
+        if (!network.connected || network.isHost || !$gameMap ||
+            typeof $gameMap.events !== "function") return;
+        const mapId = $gameMap.mapId();
+        for (const event of $gameMap.events()) {
+            if (!event || network.isLocalMapEvent(event) ||
+                event._coopEventStateInitialized !== true ||
+                event._coopEventStateMapId !== mapId ||
+                !Number.isFinite(event._coopTargetRealX) ||
+                !Number.isFinite(event._coopTargetRealY)) continue;
+            const dx = event._coopTargetRealX - Number(event._realX);
+            const dy = event._coopTargetRealY - Number(event._realY);
+            event._realX = Math.abs(dx) < 0.025
+                ? event._coopTargetRealX
+                : event._realX + dx * 0.35;
+            event._realY = Math.abs(dy) < 0.025
+                ? event._coopTargetRealY
+                : event._realY + dy * 0.35;
+        }
     };
 
     Spriteset_Map.prototype.updateCoopRemoteSprites = function() {

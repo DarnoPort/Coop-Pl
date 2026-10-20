@@ -8,6 +8,7 @@ const {
     normalizePlayerName,
     normalizeState,
     normalizeSequence,
+    normalizeMapEventStates,
     normalizeWorldSnapshot,
     normalizeWorldChange,
     normalizeEventRequest,
@@ -348,6 +349,24 @@ function startServer(options = {}) {
         broadcast(room, { type: "party_snapshot", party: room.party }, peer.id);
     }
 
+    function publishMapEventStates(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before publishing map event states.");
+            return;
+        }
+        const room = rooms.get(peer.roomCode);
+        if (!room || peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the room host may publish authoritative map event states.");
+            return;
+        }
+        const state = normalizeMapEventStates(message);
+        if (!state) {
+            sendError(peer, "INVALID_EVENT_STATES", "Map event state payload is invalid.");
+            return;
+        }
+        broadcast(room, { type: "event_states", ...state }, peer.id);
+    }
+
     function publishEventUi(peer, message) {
         if (!peer.roomCode) {
             sendError(peer, "NOT_JOINED", "Join a room before publishing shared event UI.");
@@ -560,6 +579,9 @@ function startServer(options = {}) {
                     break;
                 case "party_snapshot":
                     publishPartySnapshot(peer, message);
+                    break;
+                case "event_states":
+                    publishMapEventStates(peer, message);
                     break;
                 case "event_ui":
                     publishEventUi(peer, message);

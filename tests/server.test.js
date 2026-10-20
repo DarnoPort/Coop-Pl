@@ -241,6 +241,55 @@ test("server keeps host-authoritative world state and routes guest requests to h
 });
 
 
+test("server relays map event state snapshots only from the room host", async t => {
+    const instance = startServer({ host: "127.0.0.1", port: 0, maxPlayers: 3, maxClients: 4 });
+    let host;
+    let guest;
+    t.after(async () => {
+        if (host && host.readyState === WebSocket.OPEN) host.close();
+        if (guest && guest.readyState === WebSocket.OPEN) guest.close();
+        await instance.close();
+    });
+    await once(instance.wss, "listening");
+    const url = "ws://127.0.0.1:" + instance.wss.address().port;
+    host = new WebSocket(url);
+    await once(host, "open");
+    const hostWelcome = waitForType(host, "welcome");
+    host.send(JSON.stringify({ type: "join", room: "EVENT_STATE_TEST", name: "Host", seq: 0, state: makeState(8, 6) }));
+    await hostWelcome;
+    guest = new WebSocket(url);
+    await once(guest, "open");
+    const guestWelcome = waitForType(guest, "welcome");
+    const joined = waitForType(host, "player_joined");
+    guest.send(JSON.stringify({ type: "join", room: "EVENT_STATE_TEST", name: "Guest", seq: 0, state: makeState(8, 6) }));
+    await Promise.all([guestWelcome, joined]);
+    const eventStates = {
+        type: "event_states", mapId: 1,
+        events: [{
+            eventId: 2, x: 4, y: 5, realX: 4.25, realY: 5,
+            direction: 6, characterName: "Npc", characterIndex: 1, pattern: 2,
+            transparent: false, opacity: 180, priorityType: 2, erased: false
+        }]
+    };
+    const relayedPromise = waitForType(guest, "event_states");
+    host.send(JSON.stringify(eventStates));
+    const relayed = await relayedPromise;
+    assert.equal(relayed.mapId, 1);
+    assert.deepEqual(relayed.events, eventStates.events);
+    const unauthorizedPromise = new Promise(resolve => {
+        const onMessage = raw => {
+            let message;
+            try { message = JSON.parse(raw.toString()); } catch (_) { return; }
+            if (message.type !== "error") return;
+            guest.off("message", onMessage);
+            resolve(message);
+        };
+        guest.on("message", onMessage);
+    });
+    guest.send(JSON.stringify(eventStates));
+    assert.equal((await unauthorizedPromise).code, "HOST_ONLY");
+});
+
 test("server routes guest shared-event requests to host and releases event locks", async t => {
     const instance = startServer({ host: "127.0.0.1", port: 0, maxPlayers: 3, maxClients: 4 });
     let host;

@@ -120,6 +120,21 @@ the host still executes shared commands once.
 - The host must still be on the same map to accept a guest's map-event request. An interrupted
   shared event is not resumed after host migration.
 
+## Host-authoritative map event movement snapshots — 2026-10-21
+
+While connected on the same map, the host periodically publishes bounded snapshots for
+non-`<CoopLocal>` map events: tile and real coordinates, direction, character image/index,
+pattern, transparency, opacity, priority, and erased state. The server validates the packet
+and relays it only when sent by the room host. Guests apply the matching-map snapshot and
+interpolate the visible event position between updates; they do not run those events'
+autonomous movement on their own while the host is on the same map. Events tagged
+`<CoopLocal>` remain local.
+
+This synchronizes the resulting event position and basic appearance, not the full movement
+route command stream. Route wait timing, collision decisions, trigger timing, script-driven
+side effects, and event logic remain host-owned and are not replicated as an atomic sequence.
+Snapshots from another map are ignored; map transfers are still not synchronized.
+
 ## Shared event UI relay — 2026-10-20
 
 The host relays standard Show Text commands (101/401) and Show Choices (102) from a host-owned

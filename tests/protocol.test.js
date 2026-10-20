@@ -7,6 +7,7 @@ const {
     normalizePlayerName,
     normalizeState,
     normalizeSequence,
+    normalizeMapEventStates,
     normalizeWorldValue,
     normalizeWorldSnapshot,
     normalizeWorldChange,
@@ -17,6 +18,24 @@ const {
     normalizeEventChoiceResult,
     normalizePartySnapshot
 } = require("../server/src/protocol");
+
+test("map event state snapshots validate positions, visuals, unique IDs and size", () => {
+    const event = {
+        eventId: 2, x: 4, y: 5, realX: 4.25, realY: 5,
+        direction: 6, characterName: "Npc", characterIndex: 1, pattern: 2,
+        transparent: false, opacity: 180, priorityType: 2, erased: false
+    };
+    const snapshot = { mapId: 1, events: [event] };
+    assert.deepEqual(normalizeMapEventStates(snapshot), snapshot);
+    assert.equal(normalizeMapEventStates({ ...snapshot, mapId: 0 }), null);
+    assert.equal(normalizeMapEventStates({ mapId: 1, events: [event, { ...event }] }), null);
+    assert.equal(normalizeMapEventStates({ mapId: 1, events: [{ ...event, direction: 3 }] }), null);
+    assert.equal(normalizeMapEventStates({ mapId: 1, events: [{ ...event, characterName: "../Npc" }] }), null);
+    assert.equal(normalizeMapEventStates({
+        mapId: 1,
+        events: Array.from({ length: 1001 }, (_, index) => ({ ...event, eventId: index + 1 }))
+    }), null);
+});
 
 test("room codes accept short ASCII identifiers and reject invalid input", () => {
     assert.equal(normalizeRoomCode(" TEST_01 "), "TEST_01");

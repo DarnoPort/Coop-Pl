@@ -89,6 +89,20 @@
 - Existing exports do not gain the new Chromium flags just by replacing the plugin. Update `chromium-args` in both existing `package.json` files or prepare a fresh test pair with the helper.
 
 
+## 2026-10-21 — authoritative map-event movement snapshots
+
+### Implemented
+- Host sends a bounded `event_states` snapshot for map events at the same cadence as player state updates.
+- Snapshots include tile/real coordinates, direction, character image/index, animation pattern, transparency, opacity, priority, and erased state.
+- The server validates snapshots and accepts them only from the current host.
+- Guests interpolate shared map-event position from host snapshots and suppress their own autonomous movement for shared events only while the host is on the same map. Events tagged `<CoopLocal>` remain local.
+- Added protocol validation tests, a real WebSocket relay/host-only test, and plugin mock tests for payload creation, application, interpolation, and `<CoopLocal>` exclusion.
+
+### Boundaries and verification
+- This is resulting position/basic visual-state replication, not replication of the full movement-route command stream or its exact wait/collision/trigger timing.
+- Map transitions, cross-map snapshots, and event-command logic remain unsynchronized.
+- The new route test still needs to be run in the two exported RPG Maker MZ clients; automated tests cannot prove native sprite timing.
+
 ## 2026-10-21 — automatic guest choice acknowledgement and CI repair
 
 ### Fixed / improved
@@ -100,4 +114,4 @@
 ### Verification
 - GitHub Actions run [39482096904](https://github.com/DarnoPort/Coop-Pl/actions/runs/39482096904) passed on commit `742fcace529279a0fd55f8498e634a40ab4c799c`: **30 tests passed, 0 failed**, and all JavaScript syntax checks passed.
 - Mock regressions cover a result arriving after the choice window starts, a result arriving before native start, and host cancellation.
-- **Still unverified:** the latest choice-window change has not yet been tested in two actual exported RPG Maker MZ clients. Mock-runtime checks do not prove the exact timing and closing behaviour of the native NW.js/MZ message windows.
+- Owner confirmation: the Show Text / Show Choices test passed in two actual exported RPG Maker MZ clients, including the late-result timing case where Guest closes the previous text first. Mock-runtime tests remain regression coverage, not a substitute for future engine-level checks.

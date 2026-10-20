@@ -66,6 +66,34 @@ function normalizeState(value) {
     };
 }
 
+function normalizeMapEventStates(value) {
+    if (!isRecord(value) || !boundedInteger(value.mapId, 1, 999999) ||
+        !Array.isArray(value.events) || value.events.length > 1000) return null;
+    const seen = new Set();
+    const events = [];
+    for (const event of value.events) {
+        if (!isRecord(event) ||
+            !boundedInteger(event.eventId, 1, 999999) || seen.has(event.eventId) ||
+            !boundedInteger(event.x, 0, 99999) || !boundedInteger(event.y, 0, 99999) ||
+            !finiteNumber(event.realX, -100000, 100000) || !finiteNumber(event.realY, -100000, 100000) ||
+            !VALID_DIRECTIONS.has(event.direction) ||
+            typeof event.characterName !== "string" || event.characterName.length > 64 ||
+            event.characterName.includes("/") || event.characterName.includes("\\") ||
+            /[\u0000-\u001f\u007f]/.test(event.characterName) ||
+            !boundedInteger(event.characterIndex, 0, 7) || !boundedInteger(event.pattern, 0, 2) ||
+            typeof event.transparent !== "boolean" || !boundedInteger(event.opacity, 0, 255) ||
+            !boundedInteger(event.priorityType, 0, 2) || typeof event.erased !== "boolean") return null;
+        seen.add(event.eventId);
+        events.push({
+            eventId: event.eventId, x: event.x, y: event.y, realX: event.realX, realY: event.realY,
+            direction: event.direction, characterName: event.characterName, characterIndex: event.characterIndex,
+            pattern: event.pattern, transparent: event.transparent, opacity: event.opacity,
+            priorityType: event.priorityType, erased: event.erased
+        });
+    }
+    return { mapId: value.mapId, events };
+}
+
 function normalizeSequence(value) {
     return boundedInteger(value, 0, Number.MAX_SAFE_INTEGER) ? value : null;
 }
@@ -345,6 +373,7 @@ module.exports = {
     normalizePlayerName,
     normalizeState,
     normalizeSequence,
+    normalizeMapEventStates,
     normalizeWorldValue,
     normalizeWorldSnapshot,
     normalizeWorldChange,

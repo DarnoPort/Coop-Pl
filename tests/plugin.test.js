@@ -64,10 +64,17 @@ class FakeGameCharacter {
         this._direction = 2;
         this._pattern = 1;
         this._transparent = false;
+        this._opacity = 255;
+        this._priorityType = 1;
     }
 
     setThrough(value) { this._through = value; }
     setPriorityType(value) { this._priorityType = value; }
+    priorityType() { return this._priorityType; }
+    setOpacity(value) { this._opacity = value; }
+    opacity() { return this._opacity; }
+    setTransparent(value) { this._transparent = Boolean(value); }
+    isTransparent() { return this._transparent; }
     characterName() { return this._characterName; }
     characterIndex() { return this._characterIndex; }
     setImage(name, index) {
@@ -243,20 +250,35 @@ class FakeSpritesetMap {
     update() {}
 }
 
-class FakeGameEvent {
+class FakeGameEvent extends FakeGameCharacter {
     constructor(id, local = false) {
-        this._eventId = id; this._trigger = 0; this.x = 8; this.y = 7;
-        this._starting = false; this.startCount = 0;
-        this._data = { id, name: "Event " + id, note: "",
+        super();
+        this._eventId = id;
+        this._trigger = 0;
+        this.x = 8;
+        this.y = 7;
+        this._realX = 8;
+        this._realY = 7;
+        this._starting = false;
+        this.startCount = 0;
+        this.selfMoveUpdates = 0;
+        this._erased = false;
+        this._data = {
+            id, name: "Event " + id, note: "",
             pages: [{ list: local
                 ? [{ code: 108, indent: 0, parameters: ["<CoopLocal>"] }]
-                : [{ code: 0, indent: 0, parameters: [] }] }] };
+                : [{ code: 0, indent: 0, parameters: [] }] }]
+        };
     }
     event() { return this._data; }
     eventId() { return this._eventId; }
     isTriggerIn(triggers) { return triggers.includes(this._trigger); }
     isStarting() { return this._starting; }
     start() { this._starting = true; this.startCount += 1; }
+    updateSelfMovement() { this.selfMoveUpdates += 1; }
+    isErased() { return this._erased; }
+    erase() { this._erased = true; }
+    refresh() {}
 }
 function makeRuntime() {
     FakeWebSocket.latest = null;
@@ -274,6 +296,7 @@ function makeRuntime() {
     const map = {
         _events: new Map(),
         mapId: () => 1,
+        events() { return Array.from(this._events.values()); },
         event(id) { return this._events.get(id) || null; }
     };
     const windowObject = { addEventListener() {} };
@@ -384,6 +407,97 @@ test("plugin connects, sends local state, renders remote sprite and removes it o
 
     runtime.windowObject.CoopPl.disconnect();
     assert.equal(runtime.windowObject.CoopPl.status().connected, false);
+});
+
+test("host publishes authoritative map-event states and excludes CoopLocal events", () => {
+    const runtime = makeRuntime();
+    const shared = new runtime.context.Game_Event(2);
+    shared.x = 4; shared.y = 5; shared._realX = 4.25; shared._realY = 5;
+    shared.setImage("Npc", 1); shared.setDirection(6); shared.setPattern(2);
+    shared.setOpacity(180); shared.setPriorityType(2);
+    runtime.map._events.set(2, shared);
+    runtime.map._events.set(3, new runtime.context.Game_Event(3, true));
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "host-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: true, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+    runtime.context.Graphics.frameCount = 20;
+    scene.update();
+    const packet = socket.sent.find(message => message.type === "event_states");
+    assert.ok(packet);
+    assert.equal(packet.mapId, 1);
+    assert.equal(packet.events.length, 1);
+    assert.equal(packet.events[0].eventId, 2);
+    assert.equal(packet.events[0].x, 4);
+    assert.equal(packet.events[0].y, 5);
+    assert.equal(packet.events[0].realX, 4.25);
+    assert.equal(packet.events[0].characterName, "Npc");
+    assert.equal(packet.events[0].characterIndex, 1);
+    assert.equal(packet.events[0].pattern, 2);
+    assert.equal(packet.events[0].opacity, 180);
+    assert.equal(packet.events[0].priorityType, 2);
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+test("guest applies host event positions and visuals, interpolates movement, and leaves CoopLocal events alone", () => {
+    const runtime = makeRuntime();
+    const shared = new runtime.context.Game_Event(2);
+    const local = new runtime.context.Game_Event(3, true);
+    runtime.map._events.set(2, shared);
+    runtime.map._events.set(3, local);
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "guest-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: false,
+        players: [{
+            playerId: "host-id", name: "Host",
+            state: {
+                mapId: 1, x: 8, y: 6, realX: 8, realY: 6,
+                direction: 2, characterName: "player", characterIndex: 0, pattern: 1
+            }
+        }],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+    const firstState = {
+        eventId: 2, x: 4, y: 5, realX: 4, realY: 5, direction: 6,
+        characterName: "Npc", characterIndex: 1, pattern: 2,
+        transparent: false, opacity: 180, priorityType: 2, erased: false
+    };
+    socket.receive({ type: "event_states", mapId: 1, events: [firstState] });
+    assert.equal(shared._x, 4);
+    assert.equal(shared._y, 5);
+    assert.equal(shared._realX, 4);
+    assert.equal(shared._realY, 5);
+    assert.equal(shared.direction(), 6);
+    assert.equal(shared.characterName(), "Npc");
+    assert.equal(shared.characterIndex(), 1);
+    assert.equal(shared.pattern(), 2);
+    assert.equal(shared.opacity(), 180);
+    assert.equal(shared.priorityType(), 2);
+    socket.receive({
+        type: "event_states", mapId: 1,
+        events: [{ ...firstState, x: 5, realX: 5, direction: 4, pattern: 1 }]
+    });
+    const spriteset = new runtime.context.Spriteset_Map();
+    spriteset.update();
+    assert.equal(shared._x, 5);
+    assert.ok(Math.abs(shared._realX - 4.35) < 0.0001);
+    assert.equal(shared.direction(), 4);
+    assert.equal(shared.pattern(), 1);
+    shared.updateSelfMovement();
+    local.updateSelfMovement();
+    assert.equal(shared.selfMoveUpdates, 0);
+    assert.equal(local.selfMoveUpdates, 1);
+    assert.equal(local._coopEventStateInitialized, undefined);
+    runtime.windowObject.CoopPl.disconnect();
 });
 
 test("plugin registers connect and disconnect event commands", () => {
