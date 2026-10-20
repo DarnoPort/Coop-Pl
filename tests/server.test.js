@@ -294,6 +294,37 @@ test("server routes guest shared-event requests to host and releases event locks
     guest.send(JSON.stringify(sharedUi));
     assert.equal((await unauthorizedUiPromise).code, "HOST_ONLY");
 
+    const sharedChoices = {
+        type: "event_ui", kind: "map", mapId: 1, eventId: 7,
+        action: "show_choices", choiceId: "choice-1", choices: ["Keep", "Leave"],
+        cancelType: -2, defaultType: 0, positionType: 2, background: 0
+    };
+    const guestChoicesPromise = waitForType(guest, "event_ui");
+    host.send(JSON.stringify(sharedChoices));
+    const guestChoices = await guestChoicesPromise;
+    assert.deepEqual(guestChoices.choices, sharedChoices.choices);
+
+    const sharedChoiceResult = {
+        type: "event_choice_result", kind: "map", mapId: 1, eventId: 7,
+        choiceId: "choice-1", result: 1
+    };
+    const guestChoiceResultPromise = waitForType(guest, "event_choice_result");
+    host.send(JSON.stringify(sharedChoiceResult));
+    assert.equal((await guestChoiceResultPromise).result, 1);
+
+    const unauthorizedResultPromise = new Promise(resolve => {
+        const onError = raw => {
+            let message;
+            try { message = JSON.parse(raw.toString()); } catch (_) { return; }
+            if (message.type !== "error") return;
+            guest.off("message", onError);
+            resolve(message);
+        };
+        guest.on("message", onError);
+    });
+    guest.send(JSON.stringify(sharedChoiceResult));
+    assert.equal((await unauthorizedResultPromise).code, "HOST_ONLY");
+
     const partyState = {
         gold: 42,
         items: { "1": 3 },

@@ -14,6 +14,7 @@ const {
     normalizeEventResult,
     normalizeEventActivity,
     normalizeEventUi,
+    normalizeEventChoiceResult,
     normalizePartySnapshot
 } = require("../server/src/protocol");
 
@@ -176,6 +177,23 @@ test("shared Show Text packets validate presentation fields and bounded lines", 
     assert.equal(normalizeEventUi({ ...payload, lines: ["x".repeat(4097)] }), null);
 });
 
+
+test("shared choices and selected result validate options, cancel types and choice IDs", () => {
+    const choices = {
+        kind: "map", mapId: 1, eventId: 7, action: "show_choices",
+        choiceId: "choice-test-1", choices: ["Keep", "Leave"],
+        cancelType: -2, defaultType: 0, positionType: 2, background: 0
+    };
+    assert.deepEqual(normalizeEventUi(choices), choices);
+    assert.equal(normalizeEventUi({ ...choices, defaultType: 3 }), null);
+    assert.equal(normalizeEventUi({ ...choices, choices: [] }), null);
+    assert.deepEqual(normalizeEventChoiceResult({
+        kind: "map", mapId: 1, eventId: 7, choiceId: "choice-test-1", result: 1
+    }), { kind: "map", mapId: 1, eventId: 7, choiceId: "choice-test-1", result: 1 });
+    assert.equal(normalizeEventChoiceResult({
+        kind: "map", mapId: 1, eventId: 7, choiceId: "choice-test-1", result: 99
+    }), null);
+});
 
 test("party snapshots accept valid party state and reject malformed actors or inventories", () => {
     const snapshot = {

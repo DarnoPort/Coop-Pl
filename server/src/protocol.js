@@ -168,33 +168,63 @@ function normalizeEventActivity(value) {
 function normalizeEventUi(value) {
     if (!isRecord(value) || (value.kind !== "map" && value.kind !== "common") ||
         !boundedInteger(value.mapId, 1, 999999) ||
-        !boundedInteger(value.eventId, 1, 999999) ||
-        value.action !== "show_text" ||
-        typeof value.faceName !== "string" || value.faceName.length > 64 ||
-        value.faceName.includes("/") || value.faceName.includes("\\") ||
-        /[\u0000-\u001f\u007f]/.test(value.faceName) ||
-        !boundedInteger(value.faceIndex, 0, 7) ||
-        !boundedInteger(value.background, 0, 2) ||
-        !boundedInteger(value.positionType, 0, 2) ||
-        !Array.isArray(value.lines) || value.lines.length < 1 || value.lines.length > 40) return null;
+        !boundedInteger(value.eventId, 1, 999999)) return null;
 
-    let totalLength = 0;
-    for (const line of value.lines) {
-        if (typeof line !== "string" || line.length > 4096 || /\u0000/.test(line)) return null;
-        totalLength += line.length;
-        if (totalLength > 32768) return null;
+    const base = { kind: value.kind, mapId: value.mapId, eventId: value.eventId };
+    if (value.action === "show_text") {
+        if (typeof value.faceName !== "string" || value.faceName.length > 64 ||
+            value.faceName.includes("/") || value.faceName.includes("\\") ||
+            /[\u0000-\u001f\u007f]/.test(value.faceName) ||
+            !boundedInteger(value.faceIndex, 0, 7) ||
+            !boundedInteger(value.background, 0, 2) ||
+            !boundedInteger(value.positionType, 0, 2) ||
+            !Array.isArray(value.lines) || value.lines.length < 1 || value.lines.length > 40) return null;
+
+        let totalLength = 0;
+        for (const line of value.lines) {
+            if (typeof line !== "string" || line.length > 4096 || /\u0000/.test(line)) return null;
+            totalLength += line.length;
+            if (totalLength > 32768) return null;
+        }
+        return {
+            ...base, action: "show_text", faceName: value.faceName,
+            faceIndex: value.faceIndex, background: value.background,
+            positionType: value.positionType, lines: value.lines.slice()
+        };
     }
 
+    if (value.action === "show_choices") {
+        if (typeof value.choiceId !== "string" || !/^[A-Za-z0-9_-]{1,96}$/.test(value.choiceId) ||
+            !Array.isArray(value.choices) || value.choices.length < 1 || value.choices.length > 20 ||
+            !boundedInteger(value.cancelType, -2, value.choices.length - 1) ||
+            !boundedInteger(value.defaultType, -1, value.choices.length - 1) ||
+            !boundedInteger(value.positionType, 0, 2) ||
+            !boundedInteger(value.background, 0, 2)) return null;
+        let totalLength = 0;
+        for (const choice of value.choices) {
+            if (typeof choice !== "string" || choice.length > 1024 || /\u0000/.test(choice)) return null;
+            totalLength += choice.length;
+            if (totalLength > 8192) return null;
+        }
+        return {
+            ...base, action: "show_choices", choiceId: value.choiceId,
+            choices: value.choices.slice(), cancelType: value.cancelType,
+            defaultType: value.defaultType, positionType: value.positionType,
+            background: value.background
+        };
+    }
+    return null;
+}
+
+function normalizeEventChoiceResult(value) {
+    if (!isRecord(value) || (value.kind !== "map" && value.kind !== "common") ||
+        !boundedInteger(value.mapId, 1, 999999) ||
+        !boundedInteger(value.eventId, 1, 999999) ||
+        typeof value.choiceId !== "string" || !/^[A-Za-z0-9_-]{1,96}$/.test(value.choiceId) ||
+        !boundedInteger(value.result, -1, 19)) return null;
     return {
-        kind: value.kind,
-        mapId: value.mapId,
-        eventId: value.eventId,
-        action: "show_text",
-        faceName: value.faceName,
-        faceIndex: value.faceIndex,
-        background: value.background,
-        positionType: value.positionType,
-        lines: value.lines.slice()
+        kind: value.kind, mapId: value.mapId, eventId: value.eventId,
+        choiceId: value.choiceId, result: value.result
     };
 }
 
@@ -322,5 +352,6 @@ module.exports = {
     normalizeEventResult,
     normalizeEventActivity,
     normalizeEventUi,
+    normalizeEventChoiceResult,
     normalizePartySnapshot
 };
