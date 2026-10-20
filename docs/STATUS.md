@@ -116,3 +116,15 @@
 - GitHub Actions run [39482096904](https://github.com/DarnoPort/Coop-Pl/actions/runs/39482096904) passed on commit `742fcace529279a0fd55f8498e634a40ab4c799c`: **30 tests passed, 0 failed**, and all JavaScript syntax checks passed.
 - Mock regressions cover a result arriving after the choice window starts, a result arriving before native start, and host cancellation.
 - Owner confirmation: the Show Text / Show Choices test passed in two actual exported RPG Maker MZ clients, including the late-result timing case where Guest closes the previous text first. Mock-runtime tests remain regression coverage, not a substitute for future engine-level checks.
+
+## 2026-10-21 — background RAF throttling in test clients
+
+### Changed
+- Added NW.js launch flag `--disable-raf-throttling` to the Host/Guest test-build helper. The existing helper already set background timer, renderer-priority and occluded-window flags, but did not explicitly keep `requestAnimationFrame` running while the game window was hidden/minimized.
+- Added a regression assertion so generated Host and Guest `package.json` files each contain the new flag exactly once.
+- Updated the manual testing guide. The plugin itself cannot enable Chromium launch flags after NW.js starts; existing test exports need their `package.json` updated and both games restarted.
+
+### Verification status
+- The generated-file test and CI run are pending.
+- A real two-client RPG Maker MZ test is still required to verify whether the background window keeps animating/updating while another application window has focus. Do not treat this runtime change as confirmed until that test passes.
+
