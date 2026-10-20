@@ -97,6 +97,7 @@
 - The server validates snapshots and accepts them only from the current host.
 - Guests interpolate shared map-event position from host snapshots and suppress their own autonomous movement for shared events only while the host is on the same map. Events tagged `<CoopLocal>` remain local.
 - Added protocol validation tests, a real WebSocket relay/host-only test, and plugin mock tests for payload creation, application, interpolation, and `<CoopLocal>` exclusion.
+- GitHub Actions run [39486636614](https://github.com/DarnoPort/Coop-Pl/actions/runs/39486636614) passed on commit `ea53b7cfeccd5642ecdf22697adff0925e944028`: **34 tests passed, 0 failed**; JavaScript syntax checks passed.
 
 ### Boundaries and verification
 - This is resulting position/basic visual-state replication, not replication of the full movement-route command stream or its exact wait/collision/trigger timing.
