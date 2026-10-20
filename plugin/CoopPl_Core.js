@@ -229,7 +229,8 @@
 
 
         createPartySnapshot() {
-            if (!$gameParty || !$gameActors) return null;
+            if (typeof $gameParty === "undefined" || !$gameParty ||
+                typeof $gameActors === "undefined" || !$gameActors) return null;
 
             const inventorySnapshot = source => {
                 const result = {};
@@ -313,7 +314,8 @@
         },
 
         sendPartySnapshot() {
-            if (!this.connected || !this.isHost || !this.socket || !$gameParty) return false;
+            if (!this.connected || !this.isHost || !this.socket ||
+                typeof $gameParty === "undefined" || !$gameParty) return false;
             const party = this.createPartySnapshot();
             if (!party) return false;
             if (JSON.stringify(party).length > 220 * 1024) {
@@ -324,7 +326,8 @@
         },
 
         applyPartySnapshot(snapshot) {
-            if (this.isHost || !snapshot || typeof snapshot !== "object" || !$gameParty) return false;
+            if (this.isHost || !snapshot || typeof snapshot !== "object" ||
+                typeof $gameParty === "undefined" || !$gameParty) return false;
             if (typeof $gameParty.inBattle === "function" && $gameParty.inBattle()) {
                 this.pendingPartySnapshot = snapshot;
                 return false;
