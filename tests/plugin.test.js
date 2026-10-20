@@ -280,7 +280,7 @@ class FakeGameEvent extends FakeGameCharacter {
     erase() { this._erased = true; }
     refresh() {}
 }
-function makeRuntime() {
+function makeRuntime(isNwjs = true) {
     FakeWebSocket.latest = null;
     // The plugin patches engine prototypes during load. Each mock runtime needs its
     // own subclass so hooks from one simulated client cannot leak into another test.
@@ -336,7 +336,11 @@ function makeRuntime() {
         Game_Event: RuntimeGameEvent,
         Game_Interpreter: RuntimeGameInterpreter,
         Window_ChoiceList: RuntimeWindowChoiceList,
-        SceneManager: { _scene: null },
+        SceneManager: {
+            _scene: null,
+            isGameActive() { return false; }
+        },
+        Utils: { isNwjs: () => isNwjs },
         Game_Switches: RuntimeGameSwitches,
         Game_Variables: RuntimeGameVariables,
         Scene_Map: RuntimeSceneMap,
@@ -359,6 +363,19 @@ function makeRuntime() {
     vm.runInContext(pluginSource, context, { filename: pluginPath });
     return { context, commands, player, map, windowObject };
 }
+
+test("NW.js clients keep scene updates active without changing non-NW.js focus behavior", () => {
+    const nwRuntime = makeRuntime(true);
+    assert.equal(nwRuntime.context.SceneManager.isGameActive(), true,
+        "the MZ scene-update gate should stay open in an unfocused NW.js client");
+
+    const browserRuntime = makeRuntime(false);
+    assert.equal(browserRuntime.context.SceneManager.isGameActive(), false,
+        "non-NW.js environments should retain the engine's original active-state check");
+
+    nwRuntime.windowObject.CoopPl.disconnect();
+    browserRuntime.windowObject.CoopPl.disconnect();
+});
 
 test("plugin connects, sends local state, renders remote sprite and removes it on leave", () => {
     const runtime = makeRuntime();
