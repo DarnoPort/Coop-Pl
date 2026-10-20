@@ -74,6 +74,8 @@ function normalizeSequence(value) {
 const MAX_WORLD_ENTRIES = 5000;
 const MAX_WORLD_STRING_LENGTH = 4096;
 const WORLD_ID_PATTERN = /^[1-9][0-9]{0,5}$/;
+const SELF_SWITCH_KEY_PATTERN = /^[1-9][0-9]{0,5},[1-9][0-9]{0,5},[A-D]$/;
+const EVENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,96}$/;
 
 function normalizeWorldValue(value) {
     if (value === null || typeof value === "boolean") return value;
@@ -103,29 +105,64 @@ function normalizeWorldEntries(entries, kind) {
     return result;
 }
 
+function normalizeSelfSwitchEntries(entries) {
+    if (!isRecord(entries)) return null;
+    if (Object.keys(entries).length > MAX_WORLD_ENTRIES) return null;
+    const result = Object.create(null);
+    for (const [key, value] of Object.entries(entries)) {
+        if (!SELF_SWITCH_KEY_PATTERN.test(key) || typeof value !== "boolean") return null;
+        result[key] = value;
+    }
+    return result;
+}
+
 function normalizeWorldSnapshot(value) {
     if (!isRecord(value)) return null;
     const switches = normalizeWorldEntries(value.switches, "switches");
     const variables = normalizeWorldEntries(value.variables, "variables");
-    if (!switches || !variables) return null;
-
-    return { switches, variables };
+    const selfSwitches = value.selfSwitches === undefined
+        ? Object.create(null)
+        : normalizeSelfSwitchEntries(value.selfSwitches);
+    if (!switches || !variables || !selfSwitches) return null;
+    return { switches, variables, selfSwitches };
 }
 
 function normalizeWorldChange(value) {
     if (!isRecord(value)) return null;
+    if (value.kind === "selfSwitch") {
+        if (typeof value.key !== "string" || !SELF_SWITCH_KEY_PATTERN.test(value.key) ||
+            typeof value.value !== "boolean") return null;
+        return { kind: "selfSwitch", key: value.key, value: value.value };
+    }
     if (value.kind !== "switch" && value.kind !== "variable") return null;
     if (!boundedInteger(value.id, 1, 999999)) return null;
-
     const normalizedValue = normalizeWorldValue(value.value);
     if (normalizedValue === null && value.value !== null) return null;
     if (value.kind === "switch" && typeof normalizedValue !== "boolean") return null;
+    return { kind: value.kind, id: value.id, value: normalizedValue };
+}
 
-    return {
-        kind: value.kind,
-        id: value.id,
-        value: normalizedValue
-    };
+function normalizeEventRequest(value) {
+    if (!isRecord(value) || (value.kind !== "map" && value.kind !== "common")) return null;
+    if (!boundedInteger(value.mapId, 1, 999999) ||
+        !boundedInteger(value.eventId, 1, 999999) ||
+        typeof value.requestId !== "string" ||
+        !EVENT_REQUEST_ID_PATTERN.test(value.requestId)) return null;
+    return { kind: value.kind, mapId: value.mapId, eventId: value.eventId, requestId: value.requestId };
+}
+
+function normalizeEventResult(value) {
+    const request = normalizeEventRequest(value);
+    if (!request || typeof value.accepted !== "boolean") return null;
+    if (value.reason !== undefined &&
+        (typeof value.reason !== "string" || value.reason.length > 64)) return null;
+    return { ...request, accepted: value.accepted, ...(value.reason ? { reason: value.reason } : {}) };
+}
+
+function normalizeEventActivity(value) {
+    const request = normalizeEventRequest(value);
+    if (!request || typeof value.active !== "boolean") return null;
+    return { kind: request.kind, mapId: request.mapId, eventId: request.eventId, active: value.active };
 }
 
 module.exports = {
@@ -136,5 +173,8 @@ module.exports = {
     normalizeSequence,
     normalizeWorldValue,
     normalizeWorldSnapshot,
-    normalizeWorldChange
+    normalizeWorldChange,
+    normalizeEventRequest,
+    normalizeEventResult,
+    normalizeEventActivity
 };
