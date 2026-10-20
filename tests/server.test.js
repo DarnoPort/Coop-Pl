@@ -265,6 +265,35 @@ test("server routes guest shared-event requests to host and releases event locks
     const joinedPromise = waitForType(host, "player_joined");
     guest.send(JSON.stringify({ type: "join", room: "EVENT_TEST", name: "Guest", seq: 0, state: makeState(8, 6) }));
     const [guestWelcome] = await Promise.all([guestWelcomePromise, joinedPromise]);
+
+    const partyState = {
+        gold: 42,
+        items: { "1": 3 },
+        weapons: { "2": 1 },
+        armors: {},
+        actors: []
+    };
+    const guestPartyPromise = waitForType(guest, "party_snapshot");
+    host.send(JSON.stringify({ type: "party_snapshot", party: partyState }));
+    const guestParty = await guestPartyPromise;
+    assert.equal(guestParty.party.gold, 42);
+    assert.equal(guestParty.party.items["1"], 3);
+    assert.equal(instance.rooms.get("EVENT_TEST").party.gold, 42);
+
+    let lateGuest;
+    t.after(() => {
+        if (lateGuest && lateGuest.readyState === WebSocket.OPEN) lateGuest.close();
+    });
+    lateGuest = new WebSocket(url);
+    await once(lateGuest, "open");
+    const lateWelcomePromise = waitForType(lateGuest, "welcome");
+    lateGuest.send(JSON.stringify({
+        type: "join", room: "EVENT_TEST", name: "Late", seq: 0, state: makeState(4, 5)
+    }));
+    const lateWelcome = await lateWelcomePromise;
+    assert.equal(lateWelcome.party.gold, 42,
+        "new guests receive the latest authoritative party snapshot");
+
     const request = { requestId: "ev-test-1", kind: "map", mapId: 1, eventId: 7 };
     const forwardedPromise = waitForType(host, "event_request");
     guest.send(JSON.stringify({ type: "event_request", ...request }));
