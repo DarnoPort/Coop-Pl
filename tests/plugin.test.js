@@ -498,3 +498,52 @@ test("guest applies authoritative party snapshot and defers it while a battle is
     assert.equal(actors[2]._equips[1], armor);
     runtime.windowObject.CoopPl.disconnect();
 });
+
+
+test("host accepts a trigger only when the event really starts and locks duplicate activations", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    const state = {
+        mapId: 1, x: 8, y: 6, realX: 8, realY: 6,
+        direction: 2, characterName: "player", characterIndex: 0, pattern: 1
+    };
+    socket.receive({
+        type: "welcome", playerId: "host-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: true,
+        players: [{ playerId: "guest-id", name: "Guest", state }],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    const event = new runtime.context.Game_Event(7, false);
+    runtime.map._events.set(7, event);
+    const request = {
+        type: "event_request", requestId: "ev-host-1", kind: "map",
+        mapId: 1, eventId: 7, playerId: "guest-id", playerName: "Guest",
+        playerState: state
+    };
+    socket.receive(request);
+    assert.equal(event.startCount, 1);
+    assert.equal(runtime.windowObject.CoopPl.status().activeSharedEventCount, 1);
+    assert.equal(socket.sent.at(-1).type, "event_result");
+    assert.equal(socket.sent.at(-1).accepted, true);
+
+    socket.receive({ ...request, requestId: "ev-host-duplicate" });
+    assert.equal(event.startCount, 1);
+    assert.equal(socket.sent.at(-1).accepted, false);
+    assert.equal(socket.sent.at(-1).reason, "EVENT_BUSY");
+
+    const cannotStart = new runtime.context.Game_Event(8, false);
+    cannotStart.start = function() { this.startCount += 1; };
+    runtime.map._events.set(8, cannotStart);
+    socket.receive({ ...request, requestId: "ev-host-cannot-start", eventId: 8 });
+    assert.equal(cannotStart.startCount, 1);
+    assert.equal(socket.sent.at(-1).accepted, false);
+    assert.equal(socket.sent.at(-1).reason, "EVENT_COULD_NOT_START");
+    assert.equal(runtime.windowObject.CoopPl.status().activeSharedEventCount, 1,
+        "failed starts must not introduce an event lock");
+
+    runtime.windowObject.CoopPl.disconnect();
+});
