@@ -465,7 +465,9 @@
 
             this.eventRequestSequence += 1;
             const requestId = "ev-" + Date.now().toString(36) + "-" + this.eventRequestSequence.toString(36);
-            this.pendingEventRequests.set(requestId, { requestId, kind, mapId, eventId, key, accepted: false });
+            this.pendingEventRequests.set(requestId, {
+                requestId, kind, mapId, eventId, key, accepted: false, createdAt: Date.now()
+            });
             this.pendingEventKeys.set(key, requestId);
             if (!this.send({ type: "event_request", requestId, kind, mapId, eventId })) {
                 this.pendingEventRequests.delete(requestId);
@@ -533,6 +535,10 @@
                     return;
                 }
                 event.start();
+                if (event.isStarting && !event.isStarting()) {
+                    this.sendEventResult(request, false, "EVENT_COULD_NOT_START");
+                    return;
+                }
                 this.sendEventResult(request, true);
                 return;
             }
@@ -1114,6 +1120,14 @@
         },
 
         update() {
+            const now = Date.now();
+            for (const pending of this.pendingEventRequests.values()) {
+                if (!pending.accepted && now - pending.createdAt > 15000) {
+                    this.pendingEventRequests.delete(pending.requestId);
+                    this.pendingEventKeys.delete(pending.key);
+                    log("shared event request timed out:", pending.kind, pending.eventId);
+                }
+            }
             if (!this.connected) return;
             if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
             if (Graphics.frameCount - this.lastSendFrame < config.sendIntervalFrames) return;
@@ -1207,7 +1221,8 @@
                 return;
             }
             const result = _Game_Event_start.call(this);
-            if (network.connected && network.isHost && !network.isLocalMapEvent(this)) {
+            if (network.connected && network.isHost && !network.isLocalMapEvent(this) &&
+                (!this.isStarting || this.isStarting())) {
                 network.registerSharedEvent("map", mapId, eventId);
             }
             return result;
