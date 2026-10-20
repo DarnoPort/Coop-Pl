@@ -386,7 +386,7 @@ function startServer(options = {}) {
         const requester = room.members.get(pending.requesterId);
         if (result.accepted) {
             if (lock) lock.status = "active";
-        } else if (lock && lock.requestId === result.requestId) {
+        } else if (lock && lock.requestId === result.requestId && lock.status === "pending") {
             room.activeEvents.delete(pending.key);
         }
         sendEventResult(requester, result, result.accepted, result.reason);
