@@ -135,6 +135,21 @@ class FakeSpritesetMap {
     update() {}
 }
 
+class FakeGameEvent {
+    constructor(id, local = false) {
+        this._eventId = id; this._trigger = 0; this.x = 8; this.y = 7;
+        this._starting = false; this.startCount = 0;
+        this._data = { id, name: "Event " + id, note: "",
+            pages: [{ list: local
+                ? [{ code: 108, indent: 0, parameters: ["<CoopLocal>"] }]
+                : [{ code: 0, indent: 0, parameters: [] }] }] };
+    }
+    event() { return this._data; }
+    eventId() { return this._eventId; }
+    isTriggerIn(triggers) { return triggers.includes(this._trigger); }
+    isStarting() { return this._starting; }
+    start() { this._starting = true; this.startCount += 1; }
+}
 function makeRuntime() {
     FakeWebSocket.latest = null;
     const commands = new Map();
@@ -148,7 +163,11 @@ function makeRuntime() {
         characterIndex: () => 0,
         pattern: () => 1
     };
-    const map = { mapId: () => 1 };
+    const map = {
+        _events: new Map(),
+        mapId: () => 1,
+        event(id) { return this._events.get(id) || null; }
+    };
     const windowObject = { addEventListener() {} };
     const context = vm.createContext({
         console,
@@ -172,6 +191,7 @@ function makeRuntime() {
             }
         },
         Game_Character: FakeGameCharacter,
+        Game_Event: FakeGameEvent,
         Game_Switches: FakeGameSwitches,
         Game_Variables: FakeGameVariables,
         Scene_Map: FakeSceneMap,
@@ -321,5 +341,37 @@ test("guest requests shared switch and variable changes; authoritative updates a
     assert.equal(runtime.context.$gameVariables.value(4), 123);
     assert.equal(runtime.windowObject.CoopPl.status().worldRevision, 5);
 
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+
+test("guest requests host execution for shared map events but keeps local-tagged events local", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "guest-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: false, players: [],
+        world: { revision: 0, switches: {}, variables: {} }
+    });
+    const shared = new runtime.context.Game_Event(7, false);
+    runtime.map._events.set(7, shared);
+    shared.start();
+    assert.equal(shared.startCount, 0);
+    const request = socket.sent.find(m => m.type === "event_request" && m.kind === "map");
+    assert.ok(request);
+    assert.equal(request.eventId, 7);
+    socket.receive({
+        type: "event_result", requestId: request.requestId, kind: "map",
+        mapId: 1, eventId: 7, accepted: false, reason: "EVENT_NOT_AVAILABLE"
+    });
+    assert.equal(runtime.windowObject.CoopPl.status().pendingEventCount, 0);
+    const local = new runtime.context.Game_Event(8, true);
+    runtime.map._events.set(8, local);
+    local.start();
+    assert.equal(local.startCount, 1);
+    assert.equal(socket.sent.filter(m => m.type === "event_request").length, 1);
     runtime.windowObject.CoopPl.disconnect();
 });
