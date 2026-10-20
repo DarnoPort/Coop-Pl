@@ -229,12 +229,14 @@ test("server keeps host-authoritative world state and routes guest requests to h
     const ssRequest = await ssRequestPromise;
     assert.equal(ssRequest.kind, "selfSwitch");
     assert.equal(ssRequest.key, "1,8,B");
-    const hostChangePromise = waitForType(host, "world_change");
-    const guestChangePromise = waitForType(guest, "world_change");
+    const hostSelfSwitchChangePromise = waitForType(host, "world_change");
+    const guestSelfSwitchChangePromise = waitForType(guest, "world_change");
     host.send(JSON.stringify({ type: "world_change", kind: "selfSwitch", key: ssRequest.key, value: true }));
-    const [hostChange, guestChange] = await Promise.all([hostChangePromise, guestChangePromise]);
-    assert.equal(hostChange.revision, 3);
-    assert.equal(guestChange.key, "1,8,B");
+    const [hostSelfSwitchChange, guestSelfSwitchChange] = await Promise.all([
+        hostSelfSwitchChangePromise, guestSelfSwitchChangePromise
+    ]);
+    assert.equal(hostSelfSwitchChange.revision, 3);
+    assert.equal(guestSelfSwitchChange.key, "1,8,B");
     assert.equal(instance.rooms.get("WORLD_TEST").world.selfSwitches["1,8,B"], true);
 });
 
