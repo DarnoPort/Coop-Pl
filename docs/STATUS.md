@@ -140,6 +140,6 @@
 - The manual test guide now requires replacing the plugin in both test exports and restarting both clients; existing Chromium flags can remain but were not sufficient on their own.
 
 ### Verification status
-- Automated CI and syntax/test status must be recorded from the run triggered by this code change.
+- GitHub Actions run [39490442647](https://github.com/DarnoPort/Coop-Pl/actions/runs/39490442647) passed on commit `bec5258d5950d96d129600f8a3da83efb83e98d5`, validating the new focus-gate regression test plus the existing test suite and JavaScript syntax checks.
 - A real two-client RPG Maker MZ test is still required. Do not mark the background-window issue as fixed until the owner confirms the scene keeps updating while unfocused.
 
