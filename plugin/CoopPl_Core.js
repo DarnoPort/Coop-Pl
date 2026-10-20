@@ -191,6 +191,10 @@
         pendingEventRequests: new Map(),
         pendingEventKeys: new Map(),
         pendingEventUi: [],
+        pendingChoiceResults: new Map(),
+        choiceSequence: 0,
+        activeRemoteChoice: null,
+        remoteChoiceResolved: false,
         eventRequestSequence: 0,
         activeSharedEvents: new Set(),
         lastWorldRevision: 0,
@@ -533,52 +537,218 @@
             });
         },
 
+        publishSharedChoices(interpreter, params) {
+            if (!this.connected || !this.isHost || !interpreter ||
+                !["map", "common"].includes(interpreter._coopEventKind) ||
+                !Number.isInteger(interpreter._coopEventMapId) ||
+                !Number.isInteger(interpreter._coopEventId) ||
+                !Array.isArray(params) || !Array.isArray(params[0]) ||
+                params[0].length < 1 || params[0].length > 20) return null;
+
+            const choices = params[0].map(value => String(value));
+            if (choices.some(value => value.length > 1024) ||
+                choices.reduce((total, value) => total + value.length, 0) > 8192) return null;
+            const cancelType = Number.isInteger(params[1]) ? params[1] : -2;
+            const defaultType = Number.isInteger(params[2]) ? params[2] : -1;
+            const positionType = Number.isInteger(params[3]) ? params[3] : 2;
+            const background = Number.isInteger(params[4]) ? params[4] : 0;
+            if (cancelType < -2 || cancelType >= choices.length ||
+                defaultType < -1 || defaultType >= choices.length ||
+                positionType < 0 || positionType > 2 ||
+                background < 0 || background > 2) return null;
+
+            this.choiceSequence += 1;
+            const choiceId = "choice-" + Date.now().toString(36) + "-" + this.choiceSequence.toString(36);
+            const context = {
+                choiceId,
+                kind: interpreter._coopEventKind,
+                mapId: interpreter._coopEventMapId,
+                eventId: interpreter._coopEventId
+            };
+            const sent = this.send({
+                type: "event_ui",
+                ...context,
+                action: "show_choices",
+                choices,
+                cancelType,
+                defaultType,
+                positionType,
+                background
+            });
+            return sent ? { ...context, choices } : null;
+        },
+
+        publishSharedChoiceResult(context, result) {
+            if (!this.connected || !this.isHost || !context ||
+                !Number.isInteger(result) || result < -1 || result > 19) return false;
+            return this.send({
+                type: "event_choice_result",
+                choiceId: context.choiceId,
+                kind: context.kind,
+                mapId: context.mapId,
+                eventId: context.eventId,
+                result
+            });
+        },
+
         queueSharedEventUi(message) {
-            if (!this.connected || this.isHost || !message ||
-                message.action !== "show_text" || !$gameMap ||
+            if (!this.connected || this.isHost || !message || !$gameMap ||
                 message.mapId !== $gameMap.mapId() ||
                 !["map", "common"].includes(message.kind) ||
                 !Number.isInteger(message.eventId) || message.eventId < 1 ||
-                typeof message.faceName !== "string" || message.faceName.length > 64 ||
-                !Number.isInteger(message.faceIndex) || message.faceIndex < 0 || message.faceIndex > 7 ||
-                !Number.isInteger(message.background) || message.background < 0 || message.background > 2 ||
-                !Number.isInteger(message.positionType) || message.positionType < 0 || message.positionType > 2 ||
-                !Array.isArray(message.lines) || message.lines.length < 1 || message.lines.length > 40) return false;
-            let totalLength = 0;
-            for (const line of message.lines) {
-                if (typeof line !== "string" || line.length > 4096) return false;
-                totalLength += line.length;
-                if (totalLength > 32768) return false;
+                this.pendingEventUi.length >= 100) return false;
+
+            if (message.action === "show_text") {
+                if (typeof message.faceName !== "string" || message.faceName.length > 64 ||
+                    !Number.isInteger(message.faceIndex) || message.faceIndex < 0 || message.faceIndex > 7 ||
+                    !Number.isInteger(message.background) || message.background < 0 || message.background > 2 ||
+                    !Number.isInteger(message.positionType) || message.positionType < 0 || message.positionType > 2 ||
+                    !Array.isArray(message.lines) || message.lines.length < 1 || message.lines.length > 40) return false;
+                let totalLength = 0;
+                for (const line of message.lines) {
+                    if (typeof line !== "string" || line.length > 4096) return false;
+                    totalLength += line.length;
+                    if (totalLength > 32768) return false;
+                }
+                this.pendingEventUi.push({
+                    action: "show_text",
+                    faceName: message.faceName,
+                    faceIndex: message.faceIndex,
+                    background: message.background,
+                    positionType: message.positionType,
+                    lines: message.lines.slice()
+                });
+                return true;
             }
-            if (this.pendingEventUi.length >= 100) {
-                console.warn("[Coop-Pl] Shared text queue is full; dropping a message.");
-                return false;
+
+            if (message.action === "show_choices") {
+                if (typeof message.choiceId !== "string" ||
+                    !/^[A-Za-z0-9_-]{1,96}$/.test(message.choiceId) ||
+                    !Array.isArray(message.choices) || message.choices.length < 1 || message.choices.length > 20 ||
+                    !Number.isInteger(message.cancelType) || message.cancelType < -2 ||
+                    message.cancelType >= message.choices.length ||
+                    !Number.isInteger(message.defaultType) || message.defaultType < -1 ||
+                    message.defaultType >= message.choices.length ||
+                    !Number.isInteger(message.positionType) || message.positionType < 0 || message.positionType > 2 ||
+                    !Number.isInteger(message.background) || message.background < 0 || message.background > 2) return false;
+                let totalLength = 0;
+                for (const choice of message.choices) {
+                    if (typeof choice !== "string" || choice.length > 1024) return false;
+                    totalLength += choice.length;
+                    if (totalLength > 8192) return false;
+                }
+                this.pendingEventUi.push({
+                    action: "show_choices",
+                    choiceId: message.choiceId,
+                    kind: message.kind,
+                    mapId: message.mapId,
+                    eventId: message.eventId,
+                    choices: message.choices.slice(),
+                    cancelType: message.cancelType,
+                    defaultType: message.defaultType,
+                    positionType: message.positionType,
+                    background: message.background
+                });
+                return true;
             }
-            this.pendingEventUi.push({
-                faceName: message.faceName,
-                faceIndex: message.faceIndex,
-                background: message.background,
-                positionType: message.positionType,
-                lines: message.lines.slice()
-            });
+            return false;
+        },
+
+        receiveSharedChoiceResult(message) {
+            if (this.isHost || !message || !$gameMap ||
+                message.mapId !== $gameMap.mapId() ||
+                !["map", "common"].includes(message.kind) ||
+                !Number.isInteger(message.eventId) || message.eventId < 1 ||
+                typeof message.choiceId !== "string" ||
+                !/^[A-Za-z0-9_-]{1,96}$/.test(message.choiceId) ||
+                !Number.isInteger(message.result) || message.result < -1 || message.result > 19) return false;
+
+            const result = {
+                choiceId: message.choiceId, kind: message.kind,
+                mapId: message.mapId, eventId: message.eventId, result: message.result
+            };
+            if (this.activeRemoteChoice && this.activeRemoteChoice.choiceId === result.choiceId) {
+                return this.applySharedChoiceResult(result);
+            }
+            if (this.pendingChoiceResults.size >= 100) {
+                const oldest = this.pendingChoiceResults.keys().next().value;
+                if (oldest !== undefined) this.pendingChoiceResults.delete(oldest);
+            }
+            this.pendingChoiceResults.set(result.choiceId, result);
             return true;
+        },
+
+        applySharedChoiceResult(result) {
+            const active = this.activeRemoteChoice;
+            if (!result || !active || active.choiceId !== result.choiceId ||
+                result.kind !== active.kind || result.mapId !== active.mapId ||
+                result.eventId !== active.eventId ||
+                result.result < -1 || result.result >= active.choices.length) return false;
+
+            this.remoteChoiceResolved = true;
+            active.result = result.result;
+            const scene = typeof SceneManager !== "undefined" ? SceneManager._scene : null;
+            const messageWindow = scene && scene._messageWindow;
+            const choiceWindow = messageWindow && messageWindow._choiceListWindow;
+            if (choiceWindow && typeof choiceWindow.select === "function") {
+                choiceWindow.select(result.result);
+            }
+            return true;
+        },
+
+        clearRemoteChoice() {
+            this.activeRemoteChoice = null;
+            this.remoteChoiceResolved = false;
         },
 
         drainSharedEventUi() {
             if (!this.connected || this.isHost || this.pendingEventUi.length === 0 ||
                 typeof $gameMessage === "undefined" || !$gameMessage ||
-                typeof $gameMessage.isBusy !== "function" || $gameMessage.isBusy() ||
-                typeof $gameMessage.setFaceImage !== "function" ||
-                typeof $gameMessage.setBackground !== "function" ||
-                typeof $gameMessage.setPositionType !== "function" ||
-                typeof $gameMessage.add !== "function") return false;
+                typeof $gameMessage.isBusy !== "function" || $gameMessage.isBusy()) return false;
 
-            const message = this.pendingEventUi.shift();
-            $gameMessage.setFaceImage(message.faceName, message.faceIndex);
-            $gameMessage.setBackground(message.background);
-            $gameMessage.setPositionType(message.positionType);
-            for (const line of message.lines) $gameMessage.add(line);
-            return true;
+            const message = this.pendingEventUi[0];
+            if (message.action === "show_text") {
+                if (typeof $gameMessage.setFaceImage !== "function" ||
+                    typeof $gameMessage.setBackground !== "function" ||
+                    typeof $gameMessage.setPositionType !== "function" ||
+                    typeof $gameMessage.add !== "function") return false;
+                this.pendingEventUi.shift();
+                $gameMessage.setFaceImage(message.faceName, message.faceIndex);
+                $gameMessage.setBackground(message.background);
+                $gameMessage.setPositionType(message.positionType);
+                for (const line of message.lines) $gameMessage.add(line);
+                return true;
+            }
+
+            if (message.action === "show_choices") {
+                if (typeof $gameMessage.setChoices !== "function" ||
+                    typeof $gameMessage.setChoiceBackground !== "function" ||
+                    typeof $gameMessage.setChoicePositionType !== "function" ||
+                    typeof $gameMessage.setChoiceCallback !== "function") return false;
+                this.pendingEventUi.shift();
+                this.activeRemoteChoice = {
+                    choiceId: message.choiceId,
+                    kind: message.kind,
+                    mapId: message.mapId,
+                    eventId: message.eventId,
+                    choices: message.choices.slice(),
+                    defaultType: message.defaultType,
+                    result: null
+                };
+                this.remoteChoiceResolved = false;
+                $gameMessage.setChoices(message.choices.slice(), message.defaultType, message.cancelType);
+                $gameMessage.setChoiceBackground(message.background);
+                $gameMessage.setChoicePositionType(message.positionType);
+                $gameMessage.setChoiceCallback(() => {});
+                const pendingResult = this.pendingChoiceResults.get(message.choiceId);
+                if (pendingResult) {
+                    this.pendingChoiceResults.delete(message.choiceId);
+                    this.applySharedChoiceResult(pendingResult);
+                }
+                return true;
+            }
+            this.pendingEventUi.shift();
+            return false;
         },
         isPlayerNearEvent(playerState, event) {
             if (!playerState || !event || playerState.mapId !== ($gameMap ? $gameMap.mapId() : 0)) return false;
@@ -1035,6 +1205,8 @@
                 this.pendingEventRequests.clear();
                 this.pendingEventKeys.clear();
                 this.pendingEventUi.length = 0;
+                this.pendingChoiceResults.clear();
+                this.clearRemoteChoice();
                 this.activeSharedEvents.clear();
                 this.pendingWorldRequests.clear();
                 this.pendingPartySnapshot = null;
@@ -1061,6 +1233,8 @@
             this.pendingEventRequests.clear();
             this.pendingEventKeys.clear();
             this.pendingEventUi.length = 0;
+            this.pendingChoiceResults.clear();
+            this.clearRemoteChoice();
             this.activeSharedEvents.clear();
             this.pendingWorldRequests.clear();
             this.pendingPartySnapshot = null;
@@ -1167,6 +1341,9 @@
                 case "event_ui":
                     if (!this.isHost) this.queueSharedEventUi(message);
                     break;
+                case "event_choice_result":
+                    if (!this.isHost) this.receiveSharedChoiceResult(message);
+                    break;
                 case "event_request":
                     this.handleEventRequest(message);
                     break;
@@ -1257,6 +1434,8 @@
                 worldRevision: this.lastWorldRevision,
                 worldSyncEnabled: config.syncSwitchesVariables,
                 pendingEventCount: this.pendingEventRequests.size,
+                pendingEventUiCount: this.pendingEventUi.length,
+                activeRemoteChoice: this.activeRemoteChoice ? this.activeRemoteChoice.choiceId : null,
                 activeSharedEventCount: this.activeSharedEvents.size
             };
         }
@@ -1422,6 +1601,23 @@
                 return result;
             };
         }
+        if (typeof Game_Interpreter.prototype.setupChoices === "function") {
+            const _Game_Interpreter_setupChoices = Game_Interpreter.prototype.setupChoices;
+            Game_Interpreter.prototype.setupChoices = function(params) {
+                const sharedChoice = network.connected && network.isHost
+                    ? network.publishSharedChoices(this, params) : null;
+                const result = _Game_Interpreter_setupChoices.call(this, params);
+                if (sharedChoice && typeof $gameMessage !== "undefined" && $gameMessage &&
+                    typeof $gameMessage.setChoiceCallback === "function") {
+                    const originalCallback = $gameMessage._choiceCallback;
+                    $gameMessage.setChoiceCallback(choiceResult => {
+                        if (typeof originalCallback === "function") originalCallback(choiceResult);
+                        network.publishSharedChoiceResult(sharedChoice, choiceResult);
+                    });
+                }
+                return result;
+            };
+        }
         if (typeof Game_Interpreter.prototype.command117 === "function") {
             const _Game_Interpreter_command117 = Game_Interpreter.prototype.command117;
             Game_Interpreter.prototype.command117 = function() {
@@ -1467,6 +1663,39 @@
                     network.finishInterpreterEvent(this);
                 }
                 return _Game_Interpreter_terminate.call(this);
+            };
+        }
+    }
+
+    if (typeof Window_ChoiceList !== "undefined") {
+        const _Window_ChoiceList_processHandling = Window_ChoiceList.prototype.processHandling;
+        if (typeof _Window_ChoiceList_processHandling === "function") {
+            Window_ChoiceList.prototype.processHandling = function() {
+                if (network.connected && !network.isHost && network.activeRemoteChoice &&
+                    !network.remoteChoiceResolved) return;
+                return _Window_ChoiceList_processHandling.call(this);
+            };
+        }
+
+        for (const methodName of ["processCursorMove", "processTouch"]) {
+            const original = Window_ChoiceList.prototype[methodName];
+            if (typeof original !== "function") continue;
+            Window_ChoiceList.prototype[methodName] = function() {
+                if (network.connected && !network.isHost && network.activeRemoteChoice) return;
+                return original.call(this);
+            };
+        }
+
+        for (const methodName of ["processOk", "processCancel"]) {
+            const original = Window_ChoiceList.prototype[methodName];
+            if (typeof original !== "function") continue;
+            Window_ChoiceList.prototype[methodName] = function() {
+                const isRemoteChoice = network.connected && !network.isHost &&
+                    Boolean(network.activeRemoteChoice);
+                if (isRemoteChoice && !network.remoteChoiceResolved) return;
+                const result = original.call(this);
+                if (isRemoteChoice) network.clearRemoteChoice();
+                return result;
             };
         }
     }
