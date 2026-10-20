@@ -201,6 +201,7 @@ function makeRuntime() {
         $gameMap: map,
         $gameSwitches: new FakeGameSwitches(),
         $gameVariables: new FakeGameVariables(),
+        $gameSelfSwitches: null,
         $dataSystem: {
             switches: Array(32).fill(""),
             variables: Array(32).fill("")
