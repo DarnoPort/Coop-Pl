@@ -12,7 +12,8 @@ const {
     normalizeWorldChange,
     normalizeEventRequest,
     normalizeEventResult,
-    normalizeEventActivity
+    normalizeEventActivity,
+    normalizePartySnapshot
 } = require("./protocol");
 
 const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -151,6 +152,7 @@ function startServer(options = {}) {
                     selfSwitches: Object.create(null),
                     revision: 0
                 },
+                party: null,
                 activeEvents: new Map(),
                 eventRequests: new Map()
             };
@@ -180,7 +182,8 @@ function startServer(options = {}) {
             hostId: room.hostId,
             isHost: peer.id === room.hostId,
             players: Array.from(room.members.values(), publicPlayer),
-            world: room.world
+            world: room.world,
+            party: room.party
         });
 
         broadcast(room, {
@@ -322,6 +325,25 @@ function startServer(options = {}) {
             ...(change.kind === "selfSwitch" ? { key: change.key } : { id: change.id }),
             value: change.value
         });
+    }
+
+    function publishPartySnapshot(peer, message) {
+        if (!peer.roomCode) {
+            sendError(peer, "NOT_JOINED", "Join a room before syncing party state.");
+            return;
+        }
+        const room = rooms.get(peer.roomCode);
+        if (!room || peer.id !== room.hostId) {
+            sendError(peer, "HOST_ONLY", "Only the room host may publish authoritative party state.");
+            return;
+        }
+        const party = normalizePartySnapshot(message.party);
+        if (!party) {
+            sendError(peer, "INVALID_PARTY_SNAPSHOT", "Party snapshot is invalid.");
+            return;
+        }
+        room.party = party;
+        broadcast(room, { type: "party_snapshot", party: room.party }, peer.id);
     }
 
     function eventLockKey(kind, mapId, eventId) {
@@ -497,6 +519,9 @@ function startServer(options = {}) {
                     break;
                 case "world_change":
                     publishWorldChange(peer, message);
+                    break;
+                case "party_snapshot":
+                    publishPartySnapshot(peer, message);
                     break;
                 case "event_request":
                     handleEventRequest(peer, message);
