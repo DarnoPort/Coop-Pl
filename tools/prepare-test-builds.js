@@ -70,7 +70,7 @@ function patchChromiumArgs(packagePath, role) {
     // Remove every old profile argument so repeating this operation never creates
     // two conflicting --user-data-dir values. Preserve all unrelated Chromium args.
     let args = oldArgs
-        .replace(/(?:^|\s)--user-data-dir(?:=|\s+)(?:"[^"]*"|'[^']*'|\\S+)/g, " ")
+        .replace(/(?:^|\s)--user-data-dir(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g, " ")
         .replace(/\s+/g, " ")
         .trim();
 
