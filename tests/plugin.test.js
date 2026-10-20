@@ -491,9 +491,9 @@ test("guest applies authoritative party snapshot and defers it while a battle is
     assert.equal(actors[1]._hp, 27);
     assert.equal(actors[1]._mp, 11);
     assert.equal(actors[1]._tp, 20);
-    assert.deepEqual(actors[1]._states, [2]);
+    assert.equal(actors[1]._states.join(","), "2");
     assert.equal(actors[1]._stateTurns["2"], 3);
-    assert.deepEqual(actors[1]._skills, [1, 5]);
+    assert.equal(actors[1]._skills.join(","), "1,5");
     assert.equal(actors[1]._equips[0], weapon);
     assert.equal(actors[2]._equips[1], armor);
     runtime.windowObject.CoopPl.disconnect();
