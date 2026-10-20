@@ -103,6 +103,22 @@
 
     const log = (...args) => console.info("[Coop-Pl]", ...args);
 
+    // RPG Maker MZ calls SceneManager.updateScene() only while
+    // SceneManager.isGameActive() is true. Its default implementation checks
+    // document.hasFocus(), which stops all scene/event updates when the game
+    // window loses focus even though WebSocket callbacks can still receive data.
+    // Keep NW.js co-op clients updating their scenes in the background. This does
+    // not fake OS focus or redirect input; it only removes the scene-update gate.
+    if (typeof SceneManager !== "undefined" &&
+        typeof SceneManager.isGameActive === "function" &&
+        typeof Utils !== "undefined" &&
+        typeof Utils.isNwjs === "function" &&
+        Utils.isNwjs()) {
+        SceneManager.isGameActive = function() {
+            return true;
+        };
+    }
+
     class CoopRemoteCharacter extends Game_Character {
         constructor() {
             super();
