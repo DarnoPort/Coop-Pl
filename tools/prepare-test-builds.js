@@ -5,7 +5,11 @@ const path = require("node:path");
 
 function parsePluginManifest(manifestPath) {
     const source = fs.readFileSync(manifestPath, "utf8");
-    const match = source.match(/^\s*(?:var|let|const)\s+\$plugins\s*=\s*([\s\S]*?)\s*;\s*$/);
+    // Standard MZ deployments include generated-file comments before the
+    // assignment, and commonly put the array on the next line. Match the
+    // assignment wherever it begins on a new line rather than anchoring it
+    // to the beginning of the file.
+    const match = source.match(/(?:^|\r?\n)\s*(?:var|let|const)\s+\$plugins\s*=\s*([\s\S]*?)\s*;\s*$/);
 
     if (!match) {
         throw new Error(
