@@ -85,9 +85,38 @@ snapshot and incremental changes, allowing switch-controlled event pages to conv
 
 - The host must be on the same map for a guest map-event request to be accepted.
 - The host executes shared commands once, but this first layer does not replay the event
-  command list on guests. Dialogue, choices, movement routes, party inventory/gold/HP/XP,
-  battle flow, and map transfers initiated by event commands are not yet replicated.
+  command list on guests. Dialogue, choices, movement routes, battle flow, and map transfers
+  initiated by event commands are not yet replicated. Party inventory/gold/actor state is
+  corrected from the host snapshot when the shared event finishes; it is not replicated
+  command-by-command while the event is running.
 - Range validation uses the most recently received player position and simple tile rules;
   counters, looping maps, custom radii, and plugin-specific triggers are not handled.
 - Pending event requests are cleared on disconnect/host migration; partially executed
   events are not resumed after host migration.
+
+
+## Authoritative party snapshots — 2026-10-20
+
+The host sends a validated party snapshot when it joins the room and whenever a host-owned
+shared event finishes. The server caches the latest snapshot for guests that join later and
+relays updates to connected guests. Party snapshots contain party order, gold, item/weapon/
+armor inventory, actor class and EXP, HP/MP/TP, states and state turns, skills, buffs and
+equipment. Values are bounded and shape-validated by \`normalizePartySnapshot\`.
+
+A guest that receives a party snapshot during a battle queues it and applies it after the
+guest returns to the map. That avoids rewriting battle participants while a battle scene is
+active. This is an end-of-event state correction, not per-command replay or transaction
+replication: the host still executes the shared event only once.
+
+### Event/party synchronization boundaries
+
+- Switches, variables and self-switches update through the existing host-authoritative world
+  state channel. The party snapshot transfers event-granted items/gold and actor state after
+  the host finishes the shared event.
+- The event command list is not replayed on guests. Dialogue, choice windows, character route
+  animation, intermediate checks based on party/inventory state, battle flow, enemy state and
+  map transfers are not yet replicated.
+- Custom plugin-owned actor/party fields are outside the snapshot schema and need explicit
+  adapters before they can be considered synchronized.
+- Host must still be on the same map to accept a guest's map-event request. An interrupted
+  shared event is not resumed after host migration.
