@@ -62,8 +62,13 @@
  * Variable values are limited to JSON-safe primitives (number, string, boolean,
  * null); plugin-specific objects/arrays are not synchronized.
  *
- * Not implemented yet: event execution ownership, inventory, combat, enemies,
- * story/save conflict handling, authentication or secure public hosting.
+ * Shared map events and common-event calls are host-authoritative. Guests request
+ * activation instead of executing shared event command lists a second time.
+ * Put <CoopLocal> in an event/common-event comment to keep that content client-local.
+ *
+ * This first layer does not yet mirror dialogue, choices, movement routes, party
+ * changes, battles, or map transfers initiated by an event. The host must be on
+ * the same map for a guest map-event request to be accepted.
  *
  * Setup:
  * 1. Copy this file into your game's js/plugins/ folder.
@@ -180,6 +185,10 @@
         remotePlayers: new Map(),
         applyingWorldState: false,
         pendingWorldRequests: new Map(),
+        pendingEventRequests: new Map(),
+        pendingEventKeys: new Map(),
+        eventRequestSequence: 0,
+        activeSharedEvents: new Set(),
         lastWorldRevision: 0,
         warnedVariableTypes: new Set(),
 
@@ -213,6 +222,189 @@
                 console.warn("[Coop-Pl] Send failed:", error);
                 return false;
             }
+        },
+
+
+        isLocalEventData(data) {
+            if (!data) return false;
+            if (typeof data.note === "string" && /<CoopLocal(?:\s|>)/i.test(data.note)) return true;
+            const hasTag = list => Array.isArray(list) && list.some(command =>
+                command && (command.code === 108 || command.code === 408) &&
+                Array.isArray(command.parameters) &&
+                /<CoopLocal(?:\s|>)/i.test(String(command.parameters[0] || "")));
+            if (hasTag(data.list)) return true;
+            return Array.isArray(data.pages) && data.pages.some(page => page && hasTag(page.list));
+        },
+        isLocalMapEvent(event) {
+            return this.isLocalEventData(event && typeof event.event === "function" ? event.event() : null);
+        },
+        isLocalCommonEvent(eventId) {
+            return Boolean($dataCommonEvents && this.isLocalEventData($dataCommonEvents[eventId]));
+        },
+        normalizeSelfSwitchKey(key) {
+            const raw = Array.isArray(key) ? key.join(",") : String(key || "");
+            return /^[1-9][0-9]{0,5},[1-9][0-9]{0,5},[A-D]$/.test(raw) ? raw : null;
+        },
+        eventKey(kind, mapId, eventId) {
+            return kind + ":" + mapId + ":" + eventId;
+        },
+        requestEvent(kind, mapId, eventId) {
+            if (!this.connected || this.isHost || !["map", "common"].includes(kind) ||
+                !Number.isInteger(mapId) || mapId < 1 ||
+                !Number.isInteger(eventId) || eventId < 1) return null;
+            const key = this.eventKey(kind, mapId, eventId);
+            if (this.pendingEventKeys.has(key)) return this.pendingEventKeys.get(key);
+            this.eventRequestSequence += 1;
+            const requestId = "ev-" + Date.now().toString(36) + "-" + this.eventRequestSequence.toString(36);
+            this.pendingEventRequests.set(requestId, { requestId, kind, mapId, eventId, key, accepted: false });
+            this.pendingEventKeys.set(key, requestId);
+            if (!this.send({ type: "event_request", requestId, kind, mapId, eventId })) {
+                this.pendingEventRequests.delete(requestId);
+                this.pendingEventKeys.delete(key);
+                return null;
+            }
+            return requestId;
+        },
+        requestMapEvent(event) {
+            if (!event || !event.isTriggerIn || !event.isTriggerIn([0, 1, 2]) || !$gameMap) return null;
+            return this.requestEvent("map", $gameMap.mapId(), event.eventId());
+        },
+        requestCommonEvent(eventId) {
+            if (!$gameMap || !Number.isInteger(Number(eventId))) return null;
+            return this.requestEvent("common", $gameMap.mapId(), Number(eventId));
+        },
+        isPlayerNearEvent(playerState, event) {
+            if (!playerState || !event || playerState.mapId !== ($gameMap ? $gameMap.mapId() : 0)) return false;
+            const dx = Number(event.x) - playerState.x;
+            const dy = Number(event.y) - playerState.y;
+            if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+            if (dx === 0 && dy === 0) return true;
+            if (Number(event._trigger) === 0) {
+                const facing = { 2: [0, 1], 4: [-1, 0], 6: [1, 0], 8: [0, -1] }[playerState.direction];
+                return Boolean(facing && Number(event.x) === playerState.x + facing[0] &&
+                    Number(event.y) === playerState.y + facing[1]);
+            }
+            return Math.abs(dx) <= 1 && Math.abs(dy) <= 1;
+        },
+        sendEventResult(request, accepted, reason) {
+            if (!request) return false;
+            const result = {
+                type: "event_result", requestId: request.requestId, kind: request.kind,
+                mapId: request.mapId, eventId: request.eventId, accepted: Boolean(accepted)
+            };
+            if (reason) result.reason = String(reason).slice(0, 64);
+            return this.send(result);
+        },
+        handleEventRequest(message) {
+            if (!this.connected || !this.isHost || !message) return;
+            const request = {
+                requestId: String(message.requestId || ""), kind: message.kind,
+                mapId: message.mapId, eventId: message.eventId
+            };
+            const valid = /^[A-Za-z0-9_-]{1,96}$/.test(request.requestId) &&
+                ["map", "common"].includes(request.kind) &&
+                Number.isInteger(request.mapId) && request.mapId > 0 &&
+                Number.isInteger(request.eventId) && request.eventId > 0;
+            if (!valid || !$gameMap || request.mapId !== $gameMap.mapId()) {
+                this.sendEventResult(request, false, "MAP_MISMATCH");
+                return;
+            }
+            const key = this.eventKey(request.kind, request.mapId, request.eventId);
+            if (this.activeSharedEvents.has(key)) {
+                this.sendEventResult(request, false, "EVENT_BUSY");
+                return;
+            }
+            if (request.kind === "map") {
+                const event = $gameMap.event(request.eventId);
+                if (!event || this.isLocalMapEvent(event) ||
+                    !event.isTriggerIn || !event.isTriggerIn([0, 1, 2]) ||
+                    (event.isStarting && event.isStarting()) ||
+                    !this.isPlayerNearEvent(message.playerState, event)) {
+                    this.sendEventResult(request, false, "EVENT_NOT_AVAILABLE");
+                    return;
+                }
+                event.start();
+                this.sendEventResult(request, true);
+                return;
+            }
+            const commonEvent = $dataCommonEvents && $dataCommonEvents[request.eventId];
+            if (!commonEvent || this.isLocalEventData(commonEvent) || commonEvent.trigger !== 0 ||
+                !$gameTemp || typeof $gameTemp.reserveCommonEvent !== "function" ||
+                ($gameTemp.isCommonEventReserved && $gameTemp.isCommonEventReserved())) {
+                this.sendEventResult(request, false, "COMMON_EVENT_NOT_AVAILABLE");
+                return;
+            }
+            $gameTemp.reserveCommonEvent(request.eventId);
+            this.sendEventResult(request, true);
+        },
+        handleEventResult(message) {
+            if (!message || typeof message.requestId !== "string") return;
+            const pending = this.pendingEventRequests.get(message.requestId);
+            if (!pending || pending.kind !== message.kind ||
+                pending.mapId !== message.mapId || pending.eventId !== message.eventId) return;
+            if (message.accepted) {
+                pending.accepted = true;
+                return;
+            }
+            this.pendingEventRequests.delete(pending.requestId);
+            this.pendingEventKeys.delete(pending.key);
+            log("shared event rejected:", pending.kind, pending.eventId, message.reason || "request rejected");
+        },
+        handleEventFinished(message) {
+            if (!message || typeof message.requestId !== "string") return;
+            const pending = this.pendingEventRequests.get(message.requestId);
+            if (!pending || pending.kind !== message.kind ||
+                pending.mapId !== message.mapId || pending.eventId !== message.eventId) return;
+            this.pendingEventRequests.delete(pending.requestId);
+            this.pendingEventKeys.delete(pending.key);
+        },
+        sendEventActivity(kind, mapId, eventId, active) {
+            this.send({ type: "event_activity",
+                requestId: "activity-" + kind + "-" + mapId + "-" + eventId,
+                kind, mapId, eventId, active });
+        },
+        registerSharedEvent(kind, mapId, eventId) {
+            if (!this.connected || !this.isHost || !Number.isInteger(mapId) ||
+                mapId < 1 || !Number.isInteger(eventId) || eventId < 1) return;
+            const key = this.eventKey(kind, mapId, eventId);
+            if (this.activeSharedEvents.has(key)) return;
+            this.activeSharedEvents.add(key);
+            this.sendEventActivity(kind, mapId, eventId, true);
+        },
+        finishSharedEvent(kind, mapId, eventId) {
+            const key = this.eventKey(kind, mapId, eventId);
+            if (!this.activeSharedEvents.has(key)) return;
+            this.activeSharedEvents.delete(key);
+            if (this.connected && this.isHost) this.sendEventActivity(kind, mapId, eventId, false);
+        },
+        finishInterpreterEvent(interpreter) {
+            if (!interpreter) return;
+            if (interpreter._coopEventKind && Number.isInteger(interpreter._coopEventMapId) &&
+                Number.isInteger(interpreter._coopEventId)) {
+                this.finishSharedEvent(interpreter._coopEventKind,
+                    interpreter._coopEventMapId, interpreter._coopEventId);
+            }
+            interpreter._coopEventKind = null;
+            interpreter._coopEventMapId = null;
+            interpreter._coopEventId = null;
+        },
+        publishSelfSwitchChange(key, value) {
+            const normalizedKey = this.normalizeSelfSwitchKey(key);
+            if (!config.syncSwitchesVariables || !this.connected || !this.isHost ||
+                this.applyingWorldState || !normalizedKey || typeof value !== "boolean") return;
+            this.send({ type: "world_change", kind: "selfSwitch", key: normalizedKey, value });
+        },
+        requestSelfSwitchChange(key, value) {
+            const normalizedKey = this.normalizeSelfSwitchKey(key);
+            if (!config.syncSwitchesVariables || !this.connected || this.isHost ||
+                !normalizedKey || typeof value !== "boolean") return false;
+            const pendingKey = "selfSwitch:" + normalizedKey;
+            const encoded = JSON.stringify(value);
+            if (this.pendingWorldRequests.get(pendingKey) === encoded) return true;
+            this.pendingWorldRequests.set(pendingKey, encoded);
+            const sent = this.send({ type: "world_request", kind: "selfSwitch", key: normalizedKey, value });
+            if (!sent) this.pendingWorldRequests.delete(pendingKey);
+            return sent;
         },
 
         normalizeSharedValue(value) {
@@ -317,7 +509,17 @@
                 }
             }
 
-            return { switches, variables };
+            const selfSwitches = Object.create(null);
+            if ($gameSelfSwitches && $gameSelfSwitches._data &&
+                typeof $gameSelfSwitches._data === "object") {
+                let count = 0;
+                for (const [rawKey, value] of Object.entries($gameSelfSwitches._data)) {
+                    if (value !== true || count >= 5000) continue;
+                    const key = this.normalizeSelfSwitchKey(rawKey);
+                    if (key) { selfSwitches[key] = true; count += 1; }
+                }
+            }
+            return { switches, variables, selfSwitches };
         },
 
         sendWorldSnapshot() {
@@ -335,7 +537,9 @@
             if (!config.syncSwitchesVariables || !world ||
                 typeof world !== "object" ||
                 !world.switches || typeof world.switches !== "object" ||
-                !world.variables || typeof world.variables !== "object") return;
+                !world.variables || typeof world.variables !== "object" ||
+                (world.selfSwitches !== undefined &&
+                    (!world.selfSwitches || typeof world.selfSwitches !== "object"))) return;
 
             this.applyingWorldState = true;
             try {
@@ -362,6 +566,14 @@
                     }
                     if (typeof $gameVariables.onChange === "function") $gameVariables.onChange();
                 }
+                if ($gameSelfSwitches) {
+                    $gameSelfSwitches._data = Object.create(null);
+                    for (const [rawKey, value] of Object.entries(world.selfSwitches || {})) {
+                        const key = this.normalizeSelfSwitchKey(rawKey);
+                        if (key && value === true) $gameSelfSwitches._data[key] = true;
+                    }
+                    if (typeof $gameSelfSwitches.onChange === "function") $gameSelfSwitches.onChange();
+                }
             } finally {
                 this.applyingWorldState = false;
             }
@@ -376,8 +588,18 @@
                 message.revision <= this.lastWorldRevision) return;
 
             const kind = message.kind;
-            const id = message.id;
             const value = message.value;
+            if (kind === "selfSwitch") {
+                const key = this.normalizeSelfSwitchKey(message.key);
+                if (!key || typeof value !== "boolean" || !$gameSelfSwitches) return;
+                this.applyingWorldState = true;
+                try { $gameSelfSwitches.setValue(key.split(","), value); }
+                finally { this.applyingWorldState = false; }
+                this.lastWorldRevision = message.revision;
+                this.pendingWorldRequests.delete("selfSwitch:" + key);
+                return;
+            }
+            const id = message.id;
             if (!this.isValidWorldId(kind, id)) return;
             const normalized = kind === "variable" ? this.normalizedVariableValue(value) : value;
             if (kind === "switch" && typeof normalized !== "boolean") return;
@@ -400,9 +622,14 @@
         },
 
         handleWorldRequest(message) {
-            if (!config.syncSwitchesVariables || !this.connected || !this.isHost ||
-                !message || !this.isValidWorldId(message.kind, message.id)) return;
-
+            if (!config.syncSwitchesVariables || !this.connected || !this.isHost || !message) return;
+            if (message.kind === "selfSwitch") {
+                const key = this.normalizeSelfSwitchKey(message.key);
+                if (!key || typeof message.value !== "boolean" || !$gameSelfSwitches) return;
+                $gameSelfSwitches.setValue(key.split(","), message.value);
+                return;
+            }
+            if (!this.isValidWorldId(message.kind, message.id)) return;
             const normalized = message.kind === "variable"
                 ? this.normalizedVariableValue(message.value)
                 : message.value;
@@ -492,6 +719,10 @@
                 this.hostId = null;
                 this.isHost = false;
                 this.remotePlayers.clear();
+                this.pendingEventRequests.clear();
+                this.pendingEventKeys.clear();
+                this.activeSharedEvents.clear();
+                this.pendingWorldRequests.clear();
                 this.setStatus("disconnected (code " + event.code + ")");
                 this.scheduleReconnect();
             });
@@ -512,6 +743,10 @@
             this.hostId = null;
             this.isHost = false;
             this.remotePlayers.clear();
+            this.pendingEventRequests.clear();
+            this.pendingEventKeys.clear();
+            this.activeSharedEvents.clear();
+            this.pendingWorldRequests.clear();
 
             if (socket && socket.readyState < WebSocket.CLOSING) {
                 try {
@@ -604,6 +839,15 @@
                 case "world_request":
                     this.handleWorldRequest(message);
                     break;
+                case "event_request":
+                    this.handleEventRequest(message);
+                    break;
+                case "event_result":
+                    this.handleEventResult(message);
+                    break;
+                case "event_finished":
+                    this.handleEventFinished(message);
+                    break;
                 case "host_changed":
                     this.hostId = String(message.hostId || "");
                     this.isHost = this.localId === this.hostId;
@@ -672,7 +916,9 @@
                 isHost: this.isHost,
                 remotePlayerCount: this.remotePlayers.size,
                 worldRevision: this.lastWorldRevision,
-                worldSyncEnabled: config.syncSwitchesVariables
+                worldSyncEnabled: config.syncSwitchesVariables,
+                pendingEventCount: this.pendingEventRequests.size,
+                activeSharedEventCount: this.activeSharedEvents.size
             };
         }
     };
@@ -722,6 +968,153 @@
                 network.connected && network.isHost && network.isValidWorldId("variable", id)) {
                 network.publishWorldChange("variable", id, normalized);
             }
+            return result;
+        };
+    }
+
+
+    if (typeof Game_Event !== "undefined") {
+        const _Game_Event_start = Game_Event.prototype.start;
+        Game_Event.prototype.start = function() {
+            const mapId = $gameMap ? $gameMap.mapId() : this._mapId;
+            const eventId = typeof this.eventId === "function" ? this.eventId() : this._eventId;
+            if (network.connected && !network.isHost && !network.isLocalMapEvent(this)) {
+                if (this.isTriggerIn && this.isTriggerIn([0, 1, 2])) network.requestMapEvent(this);
+                return;
+            }
+            const result = _Game_Event_start.call(this);
+            if (network.connected && network.isHost && !network.isLocalMapEvent(this)) {
+                network.registerSharedEvent("map", mapId, eventId);
+            }
+            return result;
+        };
+        if (typeof Game_Event.prototype.updateParallel === "function") {
+            const _Game_Event_updateParallel = Game_Event.prototype.updateParallel;
+            Game_Event.prototype.updateParallel = function() {
+                if (network.connected && !network.isHost && !network.isLocalMapEvent(this)) return;
+                return _Game_Event_updateParallel.call(this);
+            };
+        }
+    }
+
+    if (typeof Game_Map !== "undefined") {
+        if (typeof Game_Map.prototype.setupAutorunCommonEvent === "function") {
+            const _Game_Map_setupAutorunCommonEvent = Game_Map.prototype.setupAutorunCommonEvent;
+            Game_Map.prototype.setupAutorunCommonEvent = function() {
+                if (network.connected && !network.isHost) {
+                    const localAuto = ($dataCommonEvents || []).find(item =>
+                        item && item.trigger === 1 && $gameSwitches &&
+                        $gameSwitches.value(item.switchId) && network.isLocalEventData(item));
+                    if (localAuto && $gameTemp && $gameTemp.reserveCommonEvent) {
+                        $gameTemp.reserveCommonEvent(localAuto.id);
+                        return true;
+                    }
+                    return false;
+                }
+                return _Game_Map_setupAutorunCommonEvent.call(this);
+            };
+        }
+        if (typeof Game_Map.prototype.setupStartingEvent === "function") {
+            const _Game_Map_setupStartingEvent = Game_Map.prototype.setupStartingEvent;
+            Game_Map.prototype.setupStartingEvent = function() {
+                const result = _Game_Map_setupStartingEvent.call(this);
+                if (result && network.connected && network.isHost && this._interpreter &&
+                    Number.isInteger(this._interpreter._eventId) && this._interpreter._eventId > 0) {
+                    const key = network.eventKey("map", this.mapId(), this._interpreter._eventId);
+                    if (network.activeSharedEvents.has(key)) {
+                        this._interpreter._coopEventKind = "map";
+                        this._interpreter._coopEventMapId = this.mapId();
+                        this._interpreter._coopEventId = this._interpreter._eventId;
+                    }
+                }
+                return result;
+            };
+        }
+        if (typeof Game_Map.prototype.setupReservedCommonEvent === "function") {
+            const _Game_Map_setupReservedCommonEvent = Game_Map.prototype.setupReservedCommonEvent;
+            Game_Map.prototype.setupReservedCommonEvent = function() {
+                const reserved = $gameTemp && typeof $gameTemp.reservedCommonEvent === "function"
+                    ? $gameTemp.reservedCommonEvent() : null;
+                if (network.connected && !network.isHost && reserved && !network.isLocalEventData(reserved)) {
+                    if ($gameTemp && $gameTemp.clearCommonEventReservation) $gameTemp.clearCommonEventReservation();
+                    return false;
+                }
+                const result = _Game_Map_setupReservedCommonEvent.call(this);
+                if (result && network.connected && network.isHost && reserved && !network.isLocalEventData(reserved)) {
+                    network.registerSharedEvent("common", this.mapId(), reserved.id);
+                    if (this._interpreter) {
+                        this._interpreter._coopEventKind = "common";
+                        this._interpreter._coopEventMapId = this.mapId();
+                        this._interpreter._coopEventId = reserved.id;
+                    }
+                }
+                return result;
+            };
+        }
+    }
+
+    if (typeof Game_CommonEvent !== "undefined" && typeof Game_CommonEvent.prototype.update === "function") {
+        const _Game_CommonEvent_update = Game_CommonEvent.prototype.update;
+        Game_CommonEvent.prototype.update = function() {
+            if (network.connected && !network.isHost && !network.isLocalCommonEvent(this._commonEventId)) return;
+            return _Game_CommonEvent_update.call(this);
+        };
+    }
+
+    if (typeof Game_Interpreter !== "undefined") {
+        if (typeof Game_Interpreter.prototype.command117 === "function") {
+            const _Game_Interpreter_command117 = Game_Interpreter.prototype.command117;
+            Game_Interpreter.prototype.command117 = function() {
+                const commonEventId = Number(this._params && this._params[0]);
+                if (network.connected && !network.isHost &&
+                    commonEventId > 0 && !network.isLocalCommonEvent(commonEventId)) {
+                    const requestId = network.requestCommonEvent(commonEventId);
+                    if (requestId) {
+                        this._coopEventWaitRequestId = requestId;
+                        this.setWaitMode("coopEvent");
+                    }
+                    return true;
+                }
+                return _Game_Interpreter_command117.call(this);
+            };
+        }
+        if (typeof Game_Interpreter.prototype.updateWaitMode === "function") {
+            const _Game_Interpreter_updateWaitMode = Game_Interpreter.prototype.updateWaitMode;
+            Game_Interpreter.prototype.updateWaitMode = function() {
+                if (this._waitMode === "coopEvent") {
+                    if (this._coopEventWaitRequestId &&
+                        network.pendingEventRequests.has(this._coopEventWaitRequestId)) return true;
+                    this._coopEventWaitRequestId = null;
+                    this._waitMode = "";
+                    return false;
+                }
+                return _Game_Interpreter_updateWaitMode.call(this);
+            };
+        }
+        if (typeof Game_Interpreter.prototype.terminate === "function") {
+            const _Game_Interpreter_terminate = Game_Interpreter.prototype.terminate;
+            Game_Interpreter.prototype.terminate = function() {
+                if ($gameMap && $gameMap._interpreter === this && network.connected && network.isHost) {
+                    network.finishInterpreterEvent(this);
+                }
+                return _Game_Interpreter_terminate.call(this);
+            };
+        }
+    }
+
+    if (typeof Game_SelfSwitches !== "undefined") {
+        const _Game_SelfSwitches_setValue = Game_SelfSwitches.prototype.setValue;
+        Game_SelfSwitches.prototype.setValue = function(key, value) {
+            const normalizedKey = network.normalizeSelfSwitchKey(key);
+            const normalizedValue = Boolean(value);
+            if (normalizedKey && config.syncSwitchesVariables && network.connected &&
+                !network.applyingWorldState && !network.isHost) {
+                if (this.value(key) !== normalizedValue) network.requestSelfSwitchChange(normalizedKey, normalizedValue);
+                return;
+            }
+            const result = _Game_SelfSwitches_setValue.call(this, key, value);
+            if (normalizedKey && !network.applyingWorldState && config.syncSwitchesVariables &&
+                network.connected && network.isHost) network.publishSelfSwitchChange(normalizedKey, normalizedValue);
             return result;
         };
     }
