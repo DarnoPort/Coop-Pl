@@ -548,12 +548,13 @@
             const choices = params[0].map(value => String(value));
             if (choices.some(value => value.length > 1024) ||
                 choices.reduce((total, value) => total + value.length, 0) > 8192) return null;
-            const cancelType = Number.isInteger(params[1]) ? params[1] : -2;
-            const defaultType = Number.isInteger(params[2]) ? params[2] : -1;
+            let cancelType = Number.isInteger(params[1]) ? params[1] : -2;
+            const defaultType = Number.isInteger(params[2]) ? params[2] : 0;
             const positionType = Number.isInteger(params[3]) ? params[3] : 2;
             const background = Number.isInteger(params[4]) ? params[4] : 0;
-            if (cancelType < -2 || cancelType >= choices.length ||
-                defaultType < -1 || defaultType >= choices.length ||
+            // MZ normalizes a cancel index beyond the available options to "disallow cancel".
+            if (cancelType >= choices.length) cancelType = -2;
+            if (cancelType < -2 || defaultType < -1 || defaultType >= choices.length ||
                 positionType < 0 || positionType > 2 ||
                 background < 0 || background > 2) return null;
 
