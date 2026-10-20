@@ -95,11 +95,23 @@ test("paired build preparation copies one export and configures host/guest indep
         );
 
         const packageJson = JSON.parse(fs.readFileSync(path.join(folder, "package.json"), "utf8"));
-        assert.match(packageJson["chromium-args"], /--force-color-profile=srgb/);
-        assert.equal(
-            packageJson["chromium-args"],
-            "--force-color-profile=srgb --user-data-dir='.\\nwjs-profile-" + role.toLowerCase() + "'"
+        const chromiumArgs = packageJson["chromium-args"];
+        assert.match(chromiumArgs, /--force-color-profile=srgb/);
+        assert.ok(
+            chromiumArgs.endsWith("--user-data-dir='.\\\\nwjs-profile-" + role.toLowerCase() + "'"),
+            "each build should retain its independent NW.js profile"
         );
+        for (const flag of [
+            "--disable-background-timer-throttling",
+            "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows"
+        ]) {
+            assert.equal(
+                chromiumArgs.split(/\\s+/).filter(argument => argument === flag).length,
+                1,
+                flag + " should appear exactly once"
+            );
+        }
         assert.equal((packageJson["chromium-args"].match(/--user-data-dir/g) || []).length, 1);
         assert.doesNotMatch(packageJson["chromium-args"], /old-profile/);
     }
