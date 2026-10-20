@@ -9,7 +9,10 @@ const {
     normalizeSequence,
     normalizeWorldValue,
     normalizeWorldSnapshot,
-    normalizeWorldChange
+    normalizeWorldChange,
+    normalizeEventRequest,
+    normalizeEventResult,
+    normalizeEventActivity
 } = require("../server/src/protocol");
 
 test("room codes accept short ASCII identifiers and reject invalid input", () => {
@@ -122,4 +125,37 @@ test("world values preserve primitive types and reject non-finite numbers", () =
     assert.equal(normalizeWorldValue("ok"), "ok");
     assert.equal(normalizeWorldValue(Infinity), null);
     assert.equal(normalizeWorldValue({}), null);
+});
+
+
+test("self-switch snapshots and changes validate event keys", () => {
+    const snapshot = normalizeWorldSnapshot({
+        switches: { "2": true }, variables: { "3": 42 },
+        selfSwitches: { "1,7,A": true, "12,42,D": false }
+    });
+    assert.ok(snapshot);
+    assert.equal(snapshot.selfSwitches["1,7,A"], true);
+    assert.equal(snapshot.selfSwitches["12,42,D"], false);
+    assert.equal(normalizeWorldSnapshot({
+        switches: {}, variables: {}, selfSwitches: { "0,1,A": true }
+    }), null);
+    assert.equal(normalizeWorldChange({
+        kind: "selfSwitch", key: "1,7,A", value: true
+    }).key, "1,7,A");
+    assert.equal(normalizeWorldChange({
+        kind: "selfSwitch", key: "1,7,X", value: true
+    }), null);
+});
+
+test("shared event requests/results/activity validate ids and values", () => {
+    const request = { kind: "map", mapId: 1, eventId: 7, requestId: "ev-abc-1" };
+    assert.deepEqual(normalizeEventRequest(request), request);
+    assert.equal(normalizeEventRequest({ ...request, eventId: 0 }), null);
+    assert.equal(normalizeEventRequest({ ...request, requestId: "bad id" }), null);
+    assert.deepEqual(normalizeEventResult({ ...request, accepted: false, reason: "EVENT_BUSY" }),
+        { ...request, accepted: false, reason: "EVENT_BUSY" });
+    assert.equal(normalizeEventResult({ ...request, accepted: "yes" }), null);
+    assert.deepEqual(normalizeEventActivity({ ...request, active: true }),
+        { kind: "map", mapId: 1, eventId: 7, active: true });
+    assert.equal(normalizeEventActivity({ ...request, active: 0 }), null);
 });
