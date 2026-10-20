@@ -13,6 +13,7 @@ const {
     normalizeEventRequest,
     normalizeEventResult,
     normalizeEventActivity,
+    normalizeEventUi,
     normalizePartySnapshot
 } = require("../server/src/protocol");
 
@@ -159,6 +160,20 @@ test("shared event requests/results/activity validate ids and values", () => {
     assert.deepEqual(normalizeEventActivity({ ...request, active: true }),
         { kind: "map", mapId: 1, eventId: 7, active: true });
     assert.equal(normalizeEventActivity({ ...request, active: 0 }), null);
+});
+
+test("shared Show Text packets validate presentation fields and bounded lines", () => {
+    const payload = {
+        kind: "map", mapId: 1, eventId: 7, action: "show_text",
+        faceName: "Actor1", faceIndex: 2, background: 1, positionType: 0,
+        lines: ["Hello", "This is a shared event."]
+    };
+    assert.deepEqual(normalizeEventUi(payload), payload);
+    assert.equal(normalizeEventUi({ ...payload, faceName: "../Actor1" }), null);
+    assert.equal(normalizeEventUi({ ...payload, positionType: 3 }), null);
+    assert.equal(normalizeEventUi({ ...payload, lines: [] }), null);
+    assert.equal(normalizeEventUi({ ...payload, lines: Array(41).fill("x") }), null);
+    assert.equal(normalizeEventUi({ ...payload, lines: ["x".repeat(4097)] }), null);
 });
 
 

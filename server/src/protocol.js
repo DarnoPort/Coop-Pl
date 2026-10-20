@@ -165,6 +165,39 @@ function normalizeEventActivity(value) {
     return { kind: request.kind, mapId: request.mapId, eventId: request.eventId, active: value.active };
 }
 
+function normalizeEventUi(value) {
+    if (!isRecord(value) || (value.kind !== "map" && value.kind !== "common") ||
+        !boundedInteger(value.mapId, 1, 999999) ||
+        !boundedInteger(value.eventId, 1, 999999) ||
+        value.action !== "show_text" ||
+        typeof value.faceName !== "string" || value.faceName.length > 64 ||
+        value.faceName.includes("/") || value.faceName.includes("\\") ||
+        /[\u0000-\u001f\u007f]/.test(value.faceName) ||
+        !boundedInteger(value.faceIndex, 0, 7) ||
+        !boundedInteger(value.background, 0, 2) ||
+        !boundedInteger(value.positionType, 0, 2) ||
+        !Array.isArray(value.lines) || value.lines.length < 1 || value.lines.length > 40) return null;
+
+    let totalLength = 0;
+    for (const line of value.lines) {
+        if (typeof line !== "string" || line.length > 4096 || /\u0000/.test(line)) return null;
+        totalLength += line.length;
+        if (totalLength > 32768) return null;
+    }
+
+    return {
+        kind: value.kind,
+        mapId: value.mapId,
+        eventId: value.eventId,
+        action: "show_text",
+        faceName: value.faceName,
+        faceIndex: value.faceIndex,
+        background: value.background,
+        positionType: value.positionType,
+        lines: value.lines.slice()
+    };
+}
+
 const MAX_PARTY_ACTORS = 32;
 const MAX_PARTY_ITEMS_PER_KIND = 2000;
 const MAX_ACTOR_STATES = 128;
@@ -288,5 +321,6 @@ module.exports = {
     normalizeEventRequest,
     normalizeEventResult,
     normalizeEventActivity,
+    normalizeEventUi,
     normalizePartySnapshot
 };

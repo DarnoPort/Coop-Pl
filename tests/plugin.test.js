@@ -109,6 +109,41 @@ class FakeSceneMap {
     update() {}
 }
 
+class FakeGameMessage {
+    constructor() {
+        this.busy = false;
+        this.faceName = "";
+        this.faceIndex = 0;
+        this.background = 0;
+        this.positionType = 2;
+        this.texts = [];
+    }
+    isBusy() { return this.busy; }
+    setFaceImage(name, index) { this.faceName = name; this.faceIndex = index; }
+    setBackground(value) { this.background = value; }
+    setPositionType(value) { this.positionType = value; }
+    add(text) { this.texts.push(text); }
+}
+
+class FakeGameInterpreter {
+    constructor() {
+        this._params = [];
+        this._list = [];
+        this._index = 0;
+        this._eventId = 0;
+        this._childInterpreter = null;
+    }
+    command101() { return true; }
+    command117() { return true; }
+    setupChild(list, eventId) {
+        this._childInterpreter = new FakeGameInterpreter();
+        this._childInterpreter._list = list;
+        this._childInterpreter._eventId = eventId;
+    }
+    updateWaitMode() { return false; }
+    terminate() { return true; }
+}
+
 class FakeSpriteCharacter {
     constructor(character) {
         this.character = character;
@@ -192,6 +227,7 @@ function makeRuntime() {
         },
         Game_Character: FakeGameCharacter,
         Game_Event: FakeGameEvent,
+        Game_Interpreter: FakeGameInterpreter,
         Game_Switches: FakeGameSwitches,
         Game_Variables: FakeGameVariables,
         Scene_Map: FakeSceneMap,
@@ -202,6 +238,7 @@ function makeRuntime() {
         $gameSwitches: new FakeGameSwitches(),
         $gameVariables: new FakeGameVariables(),
         $gameSelfSwitches: null,
+        $gameMessage: new FakeGameMessage(),
         $dataSystem: {
             switches: Array(32).fill(""),
             variables: Array(32).fill("")
@@ -499,6 +536,82 @@ test("guest applies authoritative party snapshot and defers it while a battle is
     runtime.windowObject.CoopPl.disconnect();
 });
 
+
+
+test("host mirrors Show Text from shared interpreters and propagates context to child interpreters", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "host-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: true, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    const interpreter = new runtime.context.Game_Interpreter();
+    interpreter._coopEventKind = "map";
+    interpreter._coopEventMapId = 1;
+    interpreter._coopEventId = 7;
+    interpreter._params = ["Actor1", 2, 1, 0];
+    interpreter._list = [
+        { code: 101, parameters: ["Actor1", 2, 1, 0] },
+        { code: 401, parameters: ["Host-only command execution, shared display."] },
+        { code: 401, parameters: ["Second line."] },
+        { code: 0, parameters: [] }
+    ];
+    interpreter._index = 0;
+    interpreter.command101();
+
+    const packet = socket.sent.find(message => message.type === "event_ui");
+    assert.ok(packet);
+    assert.equal(packet.kind, "map");
+    assert.equal(packet.eventId, 7);
+    assert.equal(packet.faceName, "Actor1");
+    assert.equal(packet.faceIndex, 2);
+    assert.deepEqual(Array.from(packet.lines), [
+        "Host-only command execution, shared display.", "Second line."
+    ]);
+
+    interpreter.setupChild([{ code: 101, parameters: [] }], 7);
+    assert.equal(interpreter._childInterpreter._coopEventKind, "map");
+    assert.equal(interpreter._childInterpreter._coopEventMapId, 1);
+    assert.equal(interpreter._childInterpreter._coopEventId, 7);
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+test("guest displays host Show Text packets when the message window is free", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "guest-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: false, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    runtime.context.$gameMessage.busy = true;
+    socket.receive({
+        type: "event_ui", kind: "map", mapId: 1, eventId: 7, action: "show_text",
+        faceName: "Actor1", faceIndex: 1, background: 2, positionType: 0,
+        lines: ["Shared greeting", "Second line"]
+    });
+    scene.update();
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.texts), [],
+        "shared text waits while a local message window is busy");
+
+    runtime.context.$gameMessage.busy = false;
+    scene.update();
+    assert.deepEqual(Array.from(runtime.context.$gameMessage.texts), ["Shared greeting", "Second line"]);
+    assert.equal(runtime.context.$gameMessage.faceName, "Actor1");
+    assert.equal(runtime.context.$gameMessage.faceIndex, 1);
+    assert.equal(runtime.context.$gameMessage.background, 2);
+    assert.equal(runtime.context.$gameMessage.positionType, 0);
+    runtime.windowObject.CoopPl.disconnect();
+});
 
 test("host accepts a trigger only when the event really starts and locks duplicate activations", () => {
     const runtime = makeRuntime();

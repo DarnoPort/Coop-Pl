@@ -267,6 +267,23 @@ test("server routes guest shared-event requests to host and releases event locks
     const [guestWelcome] = await Promise.all([guestWelcomePromise, joinedPromise]);
 
     const partyState = {
+
+    const sharedUi = {
+        type: "event_ui", kind: "map", mapId: 1, eventId: 7,
+        action: "show_text", faceName: "Actor1", faceIndex: 0,
+        background: 0, positionType: 2, lines: ["Host text", "Second line"]
+    };
+    const guestUiPromise = waitForType(guest, "event_ui");
+    host.send(JSON.stringify(sharedUi));
+    const guestUi = await guestUiPromise;
+    assert.deepEqual(guestUi.lines, sharedUi.lines);
+    assert.equal(guestUi.action, "show_text");
+
+    const unauthorizedUiPromise = waitForType(guest, "error");
+    guest.send(JSON.stringify(sharedUi));
+    assert.equal((await unauthorizedUiPromise).code, "HOST_ONLY");
+
+    const partyState = {
         gold: 42,
         items: { "1": 3 },
         weapons: { "2": 1 },

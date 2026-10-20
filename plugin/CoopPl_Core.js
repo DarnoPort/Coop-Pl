@@ -66,9 +66,10 @@
  * activation instead of executing shared event command lists a second time.
  * Put <CoopLocal> in an event/common-event comment to keep that content client-local.
  *
- * This first layer does not yet mirror dialogue, choices, movement routes, party
- * changes, battles, or map transfers initiated by an event. The host must be on
- * the same map for a guest map-event request to be accepted.
+ * Standard Show Text commands (101/401) from host-owned shared events are mirrored
+ * to guests on the same map. The host remains the only client executing event logic.
+ * Choices, movement routes, battles, and event-driven map transfers are not yet
+ * synchronized. The host must be on the same map for a guest map-event request.
  *
  * Setup:
  * 1. Copy this file into your game's js/plugins/ folder.
@@ -189,6 +190,7 @@
         pendingWorldRequests: new Map(),
         pendingEventRequests: new Map(),
         pendingEventKeys: new Map(),
+        pendingEventUi: [],
         eventRequestSequence: 0,
         activeSharedEvents: new Set(),
         lastWorldRevision: 0,
@@ -483,6 +485,100 @@
         requestCommonEvent(eventId) {
             if (!$gameMap || !Number.isInteger(Number(eventId))) return null;
             return this.requestEvent("common", $gameMap.mapId(), Number(eventId));
+        },
+
+        publishSharedText(interpreter) {
+            if (!this.connected || !this.isHost || !interpreter ||
+                !["map", "common"].includes(interpreter._coopEventKind) ||
+                !Number.isInteger(interpreter._coopEventMapId) ||
+                !Number.isInteger(interpreter._coopEventId)) return false;
+
+            const params = Array.isArray(interpreter._params) ? interpreter._params : [];
+            const list = Array.isArray(interpreter._list) ? interpreter._list : [];
+            const lines = [];
+            let totalLength = 0;
+            for (let index = Number(interpreter._index) + 1;
+                index < list.length && list[index] && list[index].code === 401;
+                index++) {
+                const rawText = list[index].parameters && list[index].parameters[0];
+                const line = typeof rawText === "string" ? rawText : String(rawText || "");
+                if (lines.length >= 40 || line.length > 4096) return false;
+                totalLength += line.length;
+                if (totalLength > 32768) return false;
+                lines.push(line);
+            }
+            if (lines.length === 0) return false;
+
+            const faceName = String(params[0] || "");
+            const faceIndex = Number(params[1]) || 0;
+            const background = Number(params[2]) || 0;
+            const positionType = Number(params[3]) || 0;
+            if (faceName.length > 64 || faceName.includes("/") || faceName.includes("\\") ||
+                /[\u0000-\u001f\u007f]/.test(faceName) ||
+                !Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex > 7 ||
+                !Number.isInteger(background) || background < 0 || background > 2 ||
+                !Number.isInteger(positionType) || positionType < 0 || positionType > 2) return false;
+
+            return this.send({
+                type: "event_ui",
+                kind: interpreter._coopEventKind,
+                mapId: interpreter._coopEventMapId,
+                eventId: interpreter._coopEventId,
+                action: "show_text",
+                faceName,
+                faceIndex,
+                background,
+                positionType,
+                lines
+            });
+        },
+
+        queueSharedEventUi(message) {
+            if (!this.connected || this.isHost || !message ||
+                message.action !== "show_text" || !$gameMap ||
+                message.mapId !== $gameMap.mapId() ||
+                !["map", "common"].includes(message.kind) ||
+                !Number.isInteger(message.eventId) || message.eventId < 1 ||
+                typeof message.faceName !== "string" || message.faceName.length > 64 ||
+                !Number.isInteger(message.faceIndex) || message.faceIndex < 0 || message.faceIndex > 7 ||
+                !Number.isInteger(message.background) || message.background < 0 || message.background > 2 ||
+                !Number.isInteger(message.positionType) || message.positionType < 0 || message.positionType > 2 ||
+                !Array.isArray(message.lines) || message.lines.length < 1 || message.lines.length > 40) return false;
+            let totalLength = 0;
+            for (const line of message.lines) {
+                if (typeof line !== "string" || line.length > 4096) return false;
+                totalLength += line.length;
+                if (totalLength > 32768) return false;
+            }
+            if (this.pendingEventUi.length >= 100) {
+                console.warn("[Coop-Pl] Shared text queue is full; dropping a message.");
+                return false;
+            }
+            this.pendingEventUi.push({
+                faceName: message.faceName,
+                faceIndex: message.faceIndex,
+                background: message.background,
+                positionType: message.positionType,
+                lines: message.lines.slice()
+            });
+            return true;
+        },
+
+        drainSharedEventUi() {
+            if (!this.connected || this.isHost || this.pendingEventUi.length === 0 ||
+                typeof $gameMessage === "undefined" || !$gameMessage ||
+                typeof $gameMessage.isBusy !== "function" || $gameMessage.isBusy() ||
+                typeof $gameMessage.setFaceImage !== "function" ||
+                typeof $gameMessage.setBackground !== "function" ||
+                typeof $gameMessage.setPositionType !== "function" ||
+                typeof $gameMessage.add !== "function") return false;
+
+            const message = this.pendingEventUi.shift();
+            $gameMessage.setFaceImage(message.faceName, message.faceIndex);
+            $gameMessage.setBackground(message.background);
+            $gameMessage.setPositionType(message.positionType);
+            for (const line of message.lines) $gameMessage.add(line);
+            return true;
         },
         isPlayerNearEvent(playerState, event) {
             if (!playerState || !event || playerState.mapId !== ($gameMap ? $gameMap.mapId() : 0)) return false;
@@ -938,6 +1034,7 @@
                 this.remotePlayers.clear();
                 this.pendingEventRequests.clear();
                 this.pendingEventKeys.clear();
+                this.pendingEventUi.length = 0;
                 this.activeSharedEvents.clear();
                 this.pendingWorldRequests.clear();
                 this.pendingPartySnapshot = null;
@@ -963,6 +1060,7 @@
             this.remotePlayers.clear();
             this.pendingEventRequests.clear();
             this.pendingEventKeys.clear();
+            this.pendingEventUi.length = 0;
             this.activeSharedEvents.clear();
             this.pendingWorldRequests.clear();
             this.pendingPartySnapshot = null;
@@ -1065,6 +1163,9 @@
                     break;
                 case "party_snapshot":
                     if (!this.isHost) this.applyPartySnapshot(message.party);
+                    break;
+                case "event_ui":
+                    if (!this.isHost) this.queueSharedEventUi(message);
                     break;
                 case "event_request":
                     this.handleEventRequest(message);
@@ -1301,10 +1402,39 @@
     }
 
     if (typeof Game_Interpreter !== "undefined") {
+        if (typeof Game_Interpreter.prototype.command101 === "function") {
+            const _Game_Interpreter_command101 = Game_Interpreter.prototype.command101;
+            Game_Interpreter.prototype.command101 = function() {
+                if (network.connected && network.isHost) network.publishSharedText(this);
+                return _Game_Interpreter_command101.call(this);
+            };
+        }
+        if (typeof Game_Interpreter.prototype.setupChild === "function") {
+            const _Game_Interpreter_setupChild = Game_Interpreter.prototype.setupChild;
+            Game_Interpreter.prototype.setupChild = function(list, eventId) {
+                const result = _Game_Interpreter_setupChild.call(this, list, eventId);
+                const child = this._childInterpreter;
+                if (child && this._coopEventKind && !this._coopLocalChildEvent) {
+                    child._coopEventKind = this._coopEventKind;
+                    child._coopEventMapId = this._coopEventMapId;
+                    child._coopEventId = this._coopEventId;
+                }
+                return result;
+            };
+        }
         if (typeof Game_Interpreter.prototype.command117 === "function") {
             const _Game_Interpreter_command117 = Game_Interpreter.prototype.command117;
             Game_Interpreter.prototype.command117 = function() {
                 const commonEventId = Number(this._params && this._params[0]);
+                if (network.connected && network.isHost &&
+                    this._coopEventKind && network.isLocalCommonEvent(commonEventId)) {
+                    this._coopLocalChildEvent = true;
+                    try {
+                        return _Game_Interpreter_command117.call(this);
+                    } finally {
+                        this._coopLocalChildEvent = false;
+                    }
+                }
                 if (network.connected && !network.isHost &&
                     commonEventId > 0 && !network.isLocalCommonEvent(commonEventId)) {
                     const requestId = network.requestCommonEvent(commonEventId);
@@ -1370,6 +1500,7 @@
     const _Scene_Map_update = Scene_Map.prototype.update;
     Scene_Map.prototype.update = function() {
         _Scene_Map_update.call(this);
+        network.drainSharedEventUi();
         network.applyPendingPartySnapshot();
         network.update();
     };
