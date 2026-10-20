@@ -160,8 +160,16 @@ class FakeGameInterpreter {
         this._lastChoice = null;
         this.gameMessage = null;
     }
-    command101() { return true; }
-    command117() { return true; }
+    command101(params) {
+        if (!Array.isArray(params)) throw new TypeError("MZ command101 requires params");
+        this.lastCommand101Params = params;
+        return true;
+    }
+    command117(params) {
+        if (!Array.isArray(params)) throw new TypeError("MZ command117 requires params");
+        this.lastCommand117Params = params;
+        return true;
+    }
     setupChoices(params) {
         this.gameMessage.setChoices(params[0].slice(), params[2], params[1]);
         this.gameMessage.setChoicePositionType(params[3] === undefined ? 2 : params[3]);
@@ -622,7 +630,7 @@ test("host mirrors Show Text from shared interpreters and propagates context to 
         { code: 0, parameters: [] }
     ];
     interpreter._index = 0;
-    interpreter.command101();
+    interpreter.command101(["Actor1", 2, 1, 0]);
 
     const packet = socket.sent.find(message => message.type === "event_ui");
     assert.ok(packet);
@@ -767,6 +775,39 @@ test("guest shows host choices, cannot move or select before host result, then a
     });
     assert.equal(runtime.windowObject.CoopPl.status().activeRemoteChoice, null,
         "a host cancellation must not leave the guest choice window locked");
+    runtime.windowObject.CoopPl.disconnect();
+});
+
+
+test("host preserves RPG Maker MZ command parameters when intercepting Show Text and Call Common Event", () => {
+    const runtime = makeRuntime();
+    const scene = new runtime.context.Scene_Map();
+    scene.start();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    socket.receive({
+        type: "welcome", playerId: "host-id", room: "TEST_ROOM",
+        hostId: "host-id", isHost: true, players: [],
+        world: { revision: 0, switches: {}, variables: {}, selfSwitches: {} }
+    });
+
+    const interpreter = new runtime.context.Game_Interpreter();
+    const textParams = ["", 0, 0, 2];
+    interpreter._coopEventKind = "map";
+    interpreter._coopEventMapId = 1;
+    interpreter._coopEventId = 4;
+    interpreter._list = [
+        { code: 101, parameters: textParams },
+        { code: 401, parameters: ["Parameter forwarding test"] },
+        { code: 0, parameters: [] }
+    ];
+    interpreter._index = 0;
+    interpreter.command101(textParams);
+    assert.deepEqual(Array.from(interpreter.lastCommand101Params), textParams);
+
+    const commonEventParams = [12];
+    interpreter.command117(commonEventParams);
+    assert.deepEqual(Array.from(interpreter.lastCommand117Params), commonEventParams);
     runtime.windowObject.CoopPl.disconnect();
 });
 

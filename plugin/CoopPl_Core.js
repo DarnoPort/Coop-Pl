@@ -491,13 +491,14 @@
             return this.requestEvent("common", $gameMap.mapId(), Number(eventId));
         },
 
-        publishSharedText(interpreter) {
+        publishSharedText(interpreter, commandParams) {
             if (!this.connected || !this.isHost || !interpreter ||
                 !["map", "common"].includes(interpreter._coopEventKind) ||
                 !Number.isInteger(interpreter._coopEventMapId) ||
                 !Number.isInteger(interpreter._coopEventId)) return false;
 
-            const params = Array.isArray(interpreter._params) ? interpreter._params : [];
+            const params = Array.isArray(commandParams) ? commandParams :
+                (Array.isArray(interpreter._params) ? interpreter._params : []);
             const list = Array.isArray(interpreter._list) ? interpreter._list : [];
             const lines = [];
             let totalLength = 0;
@@ -1591,9 +1592,9 @@
     if (typeof Game_Interpreter !== "undefined") {
         if (typeof Game_Interpreter.prototype.command101 === "function") {
             const _Game_Interpreter_command101 = Game_Interpreter.prototype.command101;
-            Game_Interpreter.prototype.command101 = function() {
-                if (network.connected && network.isHost) network.publishSharedText(this);
-                return _Game_Interpreter_command101.call(this);
+            Game_Interpreter.prototype.command101 = function(params) {
+                if (network.connected && network.isHost) network.publishSharedText(this, params);
+                return _Game_Interpreter_command101.call(this, params);
             };
         }
         if (typeof Game_Interpreter.prototype.setupChild === "function") {
@@ -1628,13 +1629,15 @@
         }
         if (typeof Game_Interpreter.prototype.command117 === "function") {
             const _Game_Interpreter_command117 = Game_Interpreter.prototype.command117;
-            Game_Interpreter.prototype.command117 = function() {
-                const commonEventId = Number(this._params && this._params[0]);
+            Game_Interpreter.prototype.command117 = function(params) {
+                const commandParams = Array.isArray(params) ? params :
+                    (Array.isArray(this._params) ? this._params : []);
+                const commonEventId = Number(commandParams[0]);
                 if (network.connected && network.isHost &&
                     this._coopEventKind && network.isLocalCommonEvent(commonEventId)) {
                     this._coopLocalChildEvent = true;
                     try {
-                        return _Game_Interpreter_command117.call(this);
+                        return _Game_Interpreter_command117.call(this, params);
                     } finally {
                         this._coopLocalChildEvent = false;
                     }
@@ -1648,7 +1651,7 @@
                     }
                     return true;
                 }
-                return _Game_Interpreter_command117.call(this);
+                return _Game_Interpreter_command117.call(this, params);
             };
         }
         if (typeof Game_Interpreter.prototype.updateWaitMode === "function") {
