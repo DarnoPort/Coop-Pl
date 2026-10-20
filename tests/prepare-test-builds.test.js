@@ -18,7 +18,7 @@ function makeFakeDeployment(folder) {
         JSON.stringify({
             name: "test-game",
             main: "www/index.html",
-            "chromium-args": "--force-color-profile=srgb --user-data-dir='.\\old-profile'"
+            "chromium-args": "--force-color-profile=srgb --disable-renderer-backgrounding --user-data-dir='.\\old-profile'"
         }, null, 2) + "\n"
     );
 
