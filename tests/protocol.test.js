@@ -12,7 +12,8 @@ const {
     normalizeWorldChange,
     normalizeEventRequest,
     normalizeEventResult,
-    normalizeEventActivity
+    normalizeEventActivity,
+    normalizePartySnapshot
 } = require("../server/src/protocol");
 
 test("room codes accept short ASCII identifiers and reject invalid input", () => {
@@ -158,4 +159,51 @@ test("shared event requests/results/activity validate ids and values", () => {
     assert.deepEqual(normalizeEventActivity({ ...request, active: true }),
         { kind: "map", mapId: 1, eventId: 7, active: true });
     assert.equal(normalizeEventActivity({ ...request, active: 0 }), null);
+});
+
+
+test("party snapshots accept valid party state and reject malformed actors or inventories", () => {
+    const snapshot = {
+        gold: 250,
+        items: { "1": 3 },
+        weapons: { "2": 1 },
+        armors: {},
+        actors: [{
+            actorId: 1,
+            classId: 1,
+            exp: 400,
+            hp: 25,
+            mp: 8,
+            tp: 30,
+            states: [2],
+            stateTurns: { "2": 3 },
+            skills: [1, 5],
+            buffs: [0, 1, -1],
+            buffTurns: [0, 3, 2],
+            equips: [{ kind: "weapon", id: 2 }, null],
+            name: "Hero"
+        }]
+    };
+    const normalized = normalizePartySnapshot(snapshot);
+    assert.ok(normalized);
+    assert.equal(normalized.gold, 250);
+    assert.equal(normalized.items["1"], 3);
+    assert.equal(normalized.actors[0].stateTurns["2"], 3);
+    assert.deepEqual(normalized.actors[0].equips[0], { kind: "weapon", id: 2 });
+
+    assert.equal(normalizePartySnapshot({ ...snapshot, gold: -1 }), null);
+    assert.equal(normalizePartySnapshot({
+        ...snapshot, items: { "0": 1 }
+    }), null);
+    assert.equal(normalizePartySnapshot({
+        ...snapshot, actors: [{ ...snapshot.actors[0], hp: -1 }]
+    }), null);
+    assert.equal(normalizePartySnapshot({
+        ...snapshot, actors: [{ ...snapshot.actors[0], stateTurns: { "2": -1 } }]
+    }), null);
+    assert.equal(normalizePartySnapshot({
+        ...snapshot, actors: [
+            snapshot.actors[0], { ...snapshot.actors[0], actorId: 1 }
+        ]
+    }), null);
 });
