@@ -84,11 +84,11 @@ snapshot and incremental changes, allowing switch-controlled event pages to conv
 ### Current boundaries
 
 - The host must be on the same map for a guest map-event request to be accepted.
-- The host executes shared commands once, but this first layer does not replay the event
-  command list on guests. Dialogue, choices, movement routes, battle flow, and map transfers
-  initiated by event commands are not yet replicated. Party inventory/gold/actor state is
-  corrected from the host snapshot when the shared event finishes; it is not replicated
-  command-by-command while the event is running.
+- The host executes shared commands once; guests do not run a second copy of the event command
+  list. Standard Show Text (101/401) display packets are relayed by the host to guests on the
+  same map. They are presentation-only: the guest does not execute the corresponding event logic.
+  Choices, movement routes, battle flow, and event-driven map transfers are not yet replicated.
+  Party inventory/gold/actor state is corrected from the host snapshot when the event finishes.
 - Range validation uses the most recently received player position and simple tile rules;
   counters, looping maps, custom radii, and plugin-specific triggers are not handled.
 - Pending event requests are cleared on disconnect/host migration; partially executed
@@ -96,6 +96,21 @@ snapshot and incremental changes, allowing switch-controlled event pages to conv
 
 
 ## Authoritative party snapshots — 2026-10-20
+## Shared Show Text relay — 2026-10-20
+
+The host can send standard Show Text commands (101 plus consecutive text lines 401) from a
+host-owned shared map/common event to guests on the same map. The server validates bounded
+presentation fields and forwards these packets only when the sender is the room host. The
+guest queues them until its standard message window is idle, then feeds the face, background,
+position and text into its own Game_Message.
+
+This relays display, not event execution. The guest does not execute branch logic, apply event
+commands, or choose the host's choice result. Dialogue text using variables or actor references
+assumes the host and guests have compatible shared values; party snapshots still only correct
+party state at event completion. Choices, movement routes, battles and event-driven transfers
+remain unsupported.
+
+
 
 The host sends a validated party snapshot when it joins the room and whenever a host-owned
 shared event finishes. The server caches the latest snapshot for guests that join later and
@@ -113,9 +128,9 @@ replication: the host still executes the shared event only once.
 - Switches, variables and self-switches update through the existing host-authoritative world
   state channel. The party snapshot transfers event-granted items/gold and actor state after
   the host finishes the shared event.
-- The event command list is not replayed on guests. Dialogue, choice windows, character route
-  animation, intermediate checks based on party/inventory state, battle flow, enemy state and
-  map transfers are not yet replicated.
+- The event command list is not replayed on guests. Standard Show Text commands (101/401) are
+  forwarded as presentation packets, but choice windows, character route animation, intermediate
+  checks based on party/inventory state, battle flow, enemy state and map transfers are not yet replicated.
 - Custom plugin-owned actor/party fields are outside the snapshot schema and need explicit
   adapters before they can be considered synchronized.
 - Host must still be on the same map to accept a guest's map-event request. An interrupted
